@@ -1063,10 +1063,17 @@ while : ; do
         vpn_fail_count=0
       else
         vpn_fail_count=$((vpn_fail_count + 1))
-        printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Reconnect attempt $vpn_fail_count did not restore the connection\n"
+        # Keep retrying indefinitely rather than exiting and relying on the
+        # container's restart policy - that is an external Docker setting
+        # that can silently be missing or misconfigured (e.g. a container
+        # created before --restart unless-stopped was added, or never
+        # recreated since), in which case exiting here would leave the
+        # container stopped indefinitely with no recovery at all. Escalate to
+        # [ERROR] after repeated failures for visibility, but never give up.
         if [ "$vpn_fail_count" -ge 3 ]; then
-          printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] Could not recover after 3 reconnect attempts - restarting container\n"
-          exit 5
+          printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] Reconnect attempt $vpn_fail_count did not restore the connection - still retrying every ~10 min. If this persists, check your PIA credentials/region and network connectivity.\n"
+        else
+          printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Reconnect attempt $vpn_fail_count did not restore the connection\n"
         fi
       fi
     fi
