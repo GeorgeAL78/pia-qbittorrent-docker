@@ -941,6 +941,20 @@ reconnect_vpn() {
     ip route add 0.0.0.0/1 dev pia 2>/dev/null
     ip route add 128.0.0.0/1 dev pia 2>/dev/null
     ip route flush cache 2>/dev/null
+  else
+    # OpenVPN has no wg-quick-style down/up - restart the process itself.
+    pkill -x openvpn 2>/dev/null
+    wait_i=0
+    while ifconfig 2>/dev/null | grep -q "$VPN_DEVICE" && [ $wait_i -lt 10 ]; do
+      sleep 1
+      wait_i=$((wait_i + 1))
+    done
+    ( cd "$TARGET_PATH" && openvpn --config config.ovpn --daemon --log "$VPN_LOG_DIR/openvpn.log" )
+    wait_i=0
+    while ! ifconfig 2>/dev/null | grep -q "$VPN_DEVICE" && [ $wait_i -lt 20 ]; do
+      sleep 1
+      wait_i=$((wait_i + 1))
+    done
   fi
 
   if is_enabled "$PORT_FORWARDING"; then
