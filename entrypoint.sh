@@ -13,7 +13,7 @@ exitOnError(){
   [ "$message" != "" ] || message="Undefined error"
   if [ $status != 0 ]; then
     printf "\n"
-    printf "[ERROR] $message, with status $status\n"
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] $message, with status $status\n"
     case "$message" in
       *"Could not fetch rule set generation id: Permission denied (you must be root)"*)
           printf "Check you have added --cap-add=NET_ADMIN when creating your container\n"
@@ -30,7 +30,7 @@ exitIfUnset(){
   # $1 is the name of the variable to check - not the variable itself
   var="$(eval echo "\$$1")"
   if [ -z "$var" ]; then
-    printf "[ERROR] Environment variable $1 is not set\n"
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] Environment variable $1 is not set\n"
     exit 1
   fi
 }
@@ -45,7 +45,7 @@ exitIfNotIn(){
       return 0
     fi
   done
-  printf "[ERROR] Environment variable $1 cannot be '$var' and must be one of the following: "
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] Environment variable $1 cannot be '$var' and must be one of the following: "
   for value in $(echo $2 | sed "s/,/ /g")
   do
     printf "$value "
@@ -107,7 +107,7 @@ printf "\n"
 # Check Depreciated Parameters
 ############################################
 if [ -n "$USER" ] && [ -z "$PIA_USERNAME" ]; then
-  printf "[WARNING] The use of environment variable USER is depreciated.\n"
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] The use of environment variable USER is depreciated.\n"
   printf " Please use PIA_USERNAME\n"
   printf " or use a secure auth.conf file instead. See the wiki for more information:\n"
   printf " https://github.com/GeorgeAL78/pia-qbittorrent-docker#authconf-file\n"
@@ -116,7 +116,7 @@ if [ -n "$USER" ] && [ -z "$PIA_USERNAME" ]; then
   unset -v USER
 fi
 if [ -n "$USERNAME" ] && [ -z "$PIA_USERNAME" ]; then
-  printf "[WARNING] The use of environment variable USERNAME is depreciated.\n"
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] The use of environment variable USERNAME is depreciated.\n"
   printf " Please use PIA_USERNAME\n"
   printf " or use a secure auth.conf file instead. See the wiki for more information:\n"
   printf " https://github.com/GeorgeAL78/pia-qbittorrent-docker#authconf-file\n"
@@ -125,7 +125,7 @@ if [ -n "$USERNAME" ] && [ -z "$PIA_USERNAME" ]; then
   unset -v USERNAME
 fi
 if [ -n "$PASSWORD" ] && [ -z "$PIA_PASSWORD" ]; then
-  printf "[WARNING] The use of environment variable PASSWORD is depreciated.\n"
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] The use of environment variable PASSWORD is depreciated.\n"
   printf " Please use PIA_PASSWORD\n"
   printf " or use a secure auth.conf file instead. See the wiki for more information:\n"
   printf " https://github.com/GeorgeAL78/pia-qbittorrent-docker#authconf-file\n"
@@ -134,7 +134,7 @@ if [ -n "$PASSWORD" ] && [ -z "$PIA_PASSWORD" ]; then
   unset -v PASSWORD
 fi
 if [ -n "$REGION" ]; then
-  printf "[WARNING] The use of environment variable REGION is depreciated.\n"
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] The use of environment variable REGION is depreciated.\n"
   printf " Please use PIA_REGION\n"
   printf "\n"
   export PIA_REGION=$REGION
@@ -203,21 +203,21 @@ done
 # Change Timezone
 ############################################
 if [ -n "$TZ" ]; then
-  printf "[INFO] Writing Timezone info $TZ\n"
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Writing Timezone info $TZ\n"
   
   # Check if the timezone data exists
   if [ ! -f "/usr/share/zoneinfo/$TZ" ]; then
-    printf "[ERROR] Timezone '$TZ' not found. Check the timezone\n"
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] Timezone '$TZ' not found. Check the timezone\n"
   else
     if [ -f /etc/localtime ]; then
-      printf "[WARNING] localtime file already exists! Not editing\n"
+      printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] localtime file already exists! Not editing\n"
     else
       ln -sf  "/usr/share/zoneinfo/$TZ" /etc/localtime
       printf " * Updated localtime\n"
     fi
     
     if [ -f /etc/timezone ]; then
-      printf "[WARNING] timezone file already exists! Not editing\n"
+      printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] timezone file already exists! Not editing\n"
     else
       echo "$TZ" > /etc/timezone
       printf " * Updated timezone\n"
@@ -232,22 +232,22 @@ fi
 #####################################################
 if [ -f /auth.conf ]; then
   if [ "$(wc -l < /auth.conf)" -gt 0 ] && [ "$(wc -c < /auth.conf)" -gt 10 ]; then
-    printf "[INFO] /auth.conf file looks good\n"
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] /auth.conf file looks good\n"
     if [ -n "$PIA_USERNAME" ] || [ -n "$PIA_PASSWORD" ]; then
       printf "  * Using credentials from /auth.conf\n"
       printf "  * Ignoring environment variables PIA_USERNAME and PIA_PASSWORD\n"
       printf "[Warning] Please remove PIA_USERNAME and PIA_PASSWORD environment variables\n"
     fi
   else
-    printf "[INFO] Please check /auth.conf file. Check line 1 is your username and line 2 is your password\n"
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Please check /auth.conf file. Check line 1 is your username and line 2 is your password\n"
     exit 7
   fi
 else
   # No auth file mounted creating it from environment variables
-  printf "[INFO] Unable to find /auth.conf file, creating it from environment variables\n"
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Unable to find /auth.conf file, creating it from environment variables\n"
   exitIfUnset PIA_USERNAME
   exitIfUnset PIA_PASSWORD
-  printf "[INFO] Writing PIA_USERNAME and PIA_PASSWORD to protected file /auth.conf..."
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Writing PIA_USERNAME and PIA_PASSWORD to protected file /auth.conf..."
   echo "$PIA_USERNAME" > /auth.conf
   exitOnError $?
   echo "$PIA_PASSWORD" >> /auth.conf
@@ -258,7 +258,7 @@ else
 fi
 # Check if user vars have been set and clear them
 if [ -n "$PIA_USERNAME" ] || [ -n "$PIA_PASSWORD" ]; then
-  printf "[INFO] Clearing environment variables PIA_USERNAME and PIA_PASSWORD..."
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Clearing environment variables PIA_USERNAME and PIA_PASSWORD..."
   unset -v PIA_USERNAME
   unset -v PIA_PASSWORD
   printf "DONE\n"
@@ -268,7 +268,7 @@ fi
 #            VPN configuration
 ############################################
 if [ "$VPN_CLIENT" = "wireguard" ]; then
-  printf "[INFO] Configuring WireGuard VPN client...\n"
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Configuring WireGuard VPN client...\n"
 
 if [ -f /proc/net/if_inet6 ] && ( [ $(sysctl -n net.ipv6.conf.all.disable_ipv6) -ne 1 ] || [ $(sysctl -n net.ipv6.conf.default.disable_ipv6) -ne 1 ] ); then
     printf " * Disabling ipv6 as not supported\n"
@@ -280,7 +280,7 @@ if [ -f /proc/net/if_inet6 ] && ( [ $(sysctl -n net.ipv6.conf.all.disable_ipv6) 
     "https://privateinternetaccess.com/gtoken/generateToken")
 
   if [ "$(echo "$pia_gen" | jq -r '.status')" != "OK" ]; then
-    printf " [ERROR] getting token\n"
+    printf " [$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] getting token\n"
     printf " =========================================\n"
     printf " =======Check username and password=======\n"
     printf " =========================================\n"
@@ -319,7 +319,7 @@ if [ -f /proc/net/if_inet6 ] && ( [ $(sysctl -n net.ipv6.conf.all.disable_ipv6) 
     wg_port=$(jq -r '.groups.wg | .[0] | .ports | .[0]' /app/data.json)
     
   else
-    printf "[ERROR] Getting region data, check PIA_REGION\n"
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] Getting region data, check PIA_REGION\n"
     exit 1
   fi
 
@@ -335,7 +335,7 @@ if [ -f /proc/net/if_inet6 ] && ( [ $(sysctl -n net.ipv6.conf.all.disable_ipv6) 
     "https://$wg_cn:$wg_port/addKey" )"
 
   if [ "$(echo "$wireguard_json" | jq -r '.status')" != "OK" ]; then
-    printf "[ERROR] Getting wireguard Settings - $(echo "$wireguard_json" | jq -r '.status')\n"
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] Getting wireguard Settings - $(echo "$wireguard_json" | jq -r '.status')\n"
     exit 5
   fi
 
@@ -365,13 +365,13 @@ EOF
   printf "DONE\n"
 
 else
-  printf "[INFO] Configuring OpenVPN VPN client...\n"
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Configuring OpenVPN VPN client...\n"
 
   ############################################
   # CHECK FOR TUN DEVICE
   ############################################
   if [ "$(cat /dev/net/tun 2>&1 /dev/null)" != "cat: read error: File descriptor in bad state" ]; then
-    printf "[WARNING] TUN device is not available, creating it..."
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] TUN device is not available, creating it..."
     mkdir -p /dev/net
     mknod /dev/net/tun c 10 200
     exitOnError $?
@@ -387,12 +387,12 @@ else
   exitOnError $?
   PORT=$(echo $CONNECTIONSTRING | cut -d' ' -f3)
   if [ "$PORT" = "" ]; then
-    printf "[ERROR] Port not found for $server\n"
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] Port not found for $server\n"
     exit 1
   fi
   PIADOMAIN=$(echo $CONNECTIONSTRING | cut -d' ' -f2)
   if [ "$PIADOMAIN" = "" ]; then
-    printf "[ERROR] Domain not found for $server\n"
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] Domain not found for $server\n"
     exit 1
   fi
   printf " * Port: $PORT\n"
@@ -401,7 +401,7 @@ else
   VPNIPS=$(dig $PIADOMAIN +short | grep '^[.0-9]*$')
   exitOnError $?
   if [ "$VPNIPS" = "" ]; then
-    printf "[ERROR] Unable to connect to $PIADOMAIN"
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] Unable to connect to $PIADOMAIN"
     exit 3
   fi
   for ip in $VPNIPS; do
@@ -453,7 +453,7 @@ fi
 ############################################
 # NETWORKING
 ############################################
-printf "[INFO] Finding network properties...\n"
+printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Finding network properties...\n"
 printf " * Detecting default gateway..."
 DEFAULT_GATEWAY=$(ip r | ack 'default via' | cut -d" " -f 3)
 exitOnError $?
@@ -485,7 +485,7 @@ printf "$VPN_DEVICE\n"
 ############################################
 # FIREWALL
 ############################################
-printf "[INFO] Checking firewall\n"
+printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Checking firewall\n"
 if [ "$(readlink -f $(which iptables))" = "$IPTABLES_LEGACY" ]; then
   printf " * Current mode: Legacy\n"
   FIREWALL_MODE="legacy"
@@ -535,7 +535,7 @@ else
     fi
   fi
 fi
-printf "[INFO] Setting firewall\n"
+printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Setting firewall\n"
 printf " * Blocking everything\n"
 printf "   * Deleting all iptables rules..."
 OUTPUT=$(iptables --flush 2>&1)
@@ -652,7 +652,7 @@ done
 ############################################
 # VPN LAUNCH
 ############################################
-printf "[INFO] Connecting to VPN\n"
+printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Connecting to VPN\n"
 
 mkdir -p "$VPN_LOG_DIR"
 cd "$TARGET_PATH"
@@ -679,7 +679,7 @@ fi
 ############################################
 # qBittorrent config
 ############################################
-printf "[INFO] Checking qBittorrent config\n"
+printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Checking qBittorrent config\n"
 if [ ! -e /config/qBittorrent/config/qBittorrent.conf ]; then
 	mkdir -p /config/qBittorrent/config && cp /app/qBittorrent.conf /config/qBittorrent/config/qBittorrent.conf
 	chmod 755 /config/qBittorrent/config/qBittorrent.conf
@@ -724,7 +724,7 @@ if [ "$(stat -c '%u' /config 2>/dev/null)" != "$PUID" ]; then
 fi
 
 # Wait until vpn is up
-printf "[INFO] Waiting for VPN to connect"
+printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Waiting for VPN to connect"
 looping=1
 while : ; do
 	if [ "$VPN_CLIENT" = "wireguard" ]; then
@@ -749,7 +749,7 @@ while : ; do
     if [ -n "$ERROR_LINES" ] && [ "$VPN_CLIENT" = "openvpn" ]; then
       # If errors are found, print the openvpn log
       printf "\n"
-      printf "[ERROR] OpenVPN has encounted an error, see log below and check\n"
+      printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] OpenVPN has encounted an error, see log below and check\n"
       printf "https://github.com/GeorgeAL78/pia-qbittorrent-docker/issues \n"
       printf "---------------------------------------\n"
       printf "$(cat "$VPN_LOG_DIR/openvpn.log")\n"
@@ -760,13 +760,13 @@ while : ; do
       sleep 30
     elif [ -n "$AUTH_ERROR_LINES" ] && [ "$VPN_CLIENT" = "openvpn" ]; then
         printf "\n"
-        printf "[ERROR] VPN Authentication Failed. Check your PIA username and password"
+        printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] VPN Authentication Failed. Check your PIA username and password"
         exit 7
     else
       if [ "$looping" -gt 120 ]; then
         # Been waiting 2 mins, someting mins be wrong
         printf "\n"
-        printf "[ERROR] Unable to connect to VPN. Check your network connection, PIA username and password"
+        printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] Unable to connect to VPN. Check your network connection, PIA username and password"
         exit 7
       else
         # If no errors found, waiting a bit longer
@@ -798,7 +798,7 @@ else
 fi
 
 if is_enabled "$PORT_FORWARDING"; then
-  printf "[INFO] Setting up port forwarding\n"
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Setting up port forwarding\n"
 
   # Setup the port forwading parameters depending on the VPN client
   if [ "$VPN_CLIENT" = "wireguard" ]; then
@@ -831,7 +831,7 @@ if is_enabled "$PORT_FORWARDING"; then
   pf_try=0
   pia_sig=""
   if [ "$pf_supported" = "false" ]; then
-    printf "[INFO] Region '$PIA_REGION' does not support port forwarding (all US regions lack it) - continuing without it\n"
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Region '$PIA_REGION' does not support port forwarding (all US regions lack it) - continuing without it\n"
     printf "          See https://github.com/GeorgeAL78/pia-qbittorrent-docker#pia-regions to pick a PF-capable region\n"
     pf_status="UNSUPPORTED"
   else
@@ -857,7 +857,7 @@ if is_enabled "$PORT_FORWARDING"; then
 
   if [ "$pf_status" != "OK" ]; then
     if [ "$pf_status" != "UNSUPPORTED" ]; then
-      printf "[WARNING] Port forwarding could not be established for region '$PIA_REGION' after $pf_try attempts (last curl exit $pf_ec, status '$pf_status') - continuing without it\n"
+      printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Port forwarding could not be established for region '$PIA_REGION' after $pf_try attempts (last curl exit $pf_ec, status '$pf_status') - continuing without it\n"
       printf "          The PF API stayed unreachable; your kill switch is unaffected. Try a restart or another region.\n"
     fi
     PORT_FORWARDING=false
@@ -898,7 +898,7 @@ if is_enabled "$PORT_FORWARDING"; then
       printf " * Updating port in qBittorrent config\n"
       sed -i "s/Session\\\Port=[0-9]*/Session\\\Port=$PF_PORT/g" /config/qBittorrent/config/qBittorrent.conf
     else
-      printf "[WARNING] Port forwarding bind failed - continuing without it\n"
+      printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Port forwarding bind failed - continuing without it\n"
       printf "          $(echo $binding)\n"
       PORT_FORWARDING=false
     fi
@@ -910,7 +910,7 @@ fi
 ############################################
 
 if [ -f /config/post-vpn-connect.sh ]; then
-  printf "[INFO] Running post-vpn-connect.sh\n"
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Running post-vpn-connect.sh\n"
   . /config/post-vpn-connect.sh
 fi
 # Checks the VPN tunnel is actually alive, independent of PORT_FORWARDING -
@@ -951,7 +951,7 @@ tunnel_alive() {
 # SAME port (reused payload/signature) so qBittorrent keeps running and its
 # configured port stays valid.
 reconnect_vpn() {
-  printf "\n[WARNING] Reconnecting VPN in place (no container restart)\n"
+  printf "\n[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Reconnecting VPN in place (no container restart)\n"
   if [ "$VPN_CLIENT" = "wireguard" ]; then
     doas -u root wg-quick down pia > /dev/null 2>&1
     doas -u root wg-quick up pia > "$VPN_LOG_DIR/wireguard.log" 2>&1
@@ -979,7 +979,7 @@ reconnect_vpn() {
   if is_enabled "$PORT_FORWARDING"; then
     binding=$(curl --connect-timeout 8 --max-time 15 -sGk $PF_CONNECT $PF_CERT --data-urlencode "payload=$payload" --data-urlencode "signature=$signature" https://$PF_GATEWAY:19999/bindPort)
     if [ "$(echo "$binding" | jq -r '.status')" = "OK" ]; then
-      printf "[INFO] Reconnected - port forwarding restored (port $PF_PORT)\n"
+      printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Reconnected - port forwarding restored (port $PF_PORT)\n"
       return 0
     fi
     return 1
@@ -988,7 +988,7 @@ reconnect_vpn() {
   # No port forwarding in use - a successful reconnect just needs the tunnel
   # itself back up.
   if tunnel_alive; then
-    printf "[INFO] Reconnected - tunnel is back up\n"
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Reconnected - tunnel is back up\n"
     return 0
   fi
   return 1
@@ -1002,7 +1002,7 @@ reconnect_vpn() {
 # Gracefully stop qBittorrent on shutdown (SIGTERM from `docker stop`/update, or SIGINT)
 # so it saves resume data — otherwise torrents re-check from 0% on the next start.
 graceful_shutdown() {
-  printf "\n[INFO] Shutdown signal received - stopping qBittorrent gracefully\n"
+  printf "\n[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Shutdown signal received - stopping qBittorrent gracefully\n"
   qbt_pid=$(pgrep -x qbittorrent-nox)
   if [ -n "$qbt_pid" ]; then
     kill -TERM "$qbt_pid" 2>/dev/null
@@ -1011,16 +1011,16 @@ graceful_shutdown() {
       sleep 1
     done
   fi
-  printf "[INFO] qBittorrent stopped cleanly - resume data saved\n"
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] qBittorrent stopped cleanly - resume data saved\n"
   exit 0
 }
 trap graceful_shutdown TERM INT
 
-printf "[INFO] Launching qBittorrent\n"
+printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Launching qBittorrent\n"
 
 # remove the previous lock file if it exists, otherwise qBittorrent won't start
 if [ -f /config/qBittorrent/config/lockfile ]; then
-  printf "[INFO] Cleaning lock file\n"
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Cleaning lock file\n"
   rm /config/qBittorrent/config/lockfile -f
 fi
 
@@ -1045,7 +1045,7 @@ while : ; do
 #      printf "Port Forwarding - $(echo $binding | jq -r '.message')\n"
 
       if [ "$(echo "$binding" | jq -r '.status')" != "OK" ]; then
-        printf "[WARNING] Port forwarding refresh failed\n"
+        printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Port forwarding refresh failed\n"
         need_reconnect=true
       fi
     else
@@ -1053,7 +1053,7 @@ while : ; do
       # silently (interface stays up, no error - torrents just hang with no
       # indication why). Verify it is actually passing traffic.
       if ! tunnel_alive; then
-        printf "[WARNING] Tunnel appears dead (no response from VPN gateway)\n"
+        printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Tunnel appears dead (no response from VPN gateway)\n"
         need_reconnect=true
       fi
     fi
@@ -1063,9 +1063,9 @@ while : ; do
         vpn_fail_count=0
       else
         vpn_fail_count=$((vpn_fail_count + 1))
-        printf "[WARNING] Reconnect attempt $vpn_fail_count did not restore the connection\n"
+        printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Reconnect attempt $vpn_fail_count did not restore the connection\n"
         if [ "$vpn_fail_count" -ge 3 ]; then
-          printf "[ERROR] Could not recover after 3 reconnect attempts - restarting container\n"
+          printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] Could not recover after 3 reconnect attempts - restarting container\n"
           exit 5
         fi
       fi
