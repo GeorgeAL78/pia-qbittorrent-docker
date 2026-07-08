@@ -913,17 +913,36 @@ if [ -f /config/post-vpn-connect.sh ]; then
   printf "[INFO] Running post-vpn-connect.sh\n"
   . /config/post-vpn-connect.sh
 fi
-# Probes the VPN tunnel through the same PIA gateway endpoint used for port
-# forwarding (:19999) - reused purely as a liveness signal, not to request a
-# port. Any response (even an auth error) proves the tunnel is passing
-# traffic; a timeout/connection failure means it silently died. Works for
-# both WireGuard and OpenVPN, and independent of PORT_FORWARDING - this is
-# what catches a tunnel that stays "up" (interface present) but has quietly
-# stopped passing traffic, which otherwise shows no error and just hangs.
+# Checks the VPN tunnel is actually alive, independent of PORT_FORWARDING -
+# this is what catches a tunnel that stays "up" (interface present) but has
+# quietly stopped passing traffic, which otherwise shows no error and just
+# hangs. NOTE: an earlier version of this probed the PIA gateway's port-
+# forward endpoint (:19999) as a generic reachability signal, on the theory
+# that any response (even an auth error) proves the tunnel is up. That broke
+# on regions that do not support port forwarding (all US regions): if PIA
+# simply does not run that service there, the probe fails on a perfectly
+# healthy tunnel, triggering needless reconnects and eventually an
+# unnecessary container restart. Use signals that do not depend on a
+# region-specific external service instead.
 tunnel_alive() {
-  [ -z "$PF_GATEWAY" ] && return 0
-  resp=$(curl --connect-timeout 5 --max-time 8 -sk $PF_CONNECT $PF_CERT "https://$PF_GATEWAY:19999/getSignature" 2>/dev/null)
-  [ -n "$resp" ]
+  if [ "$VPN_CLIENT" = "wireguard" ]; then
+    # WireGuard exposes handshake freshness locally, no network call needed,
+    # and it is available regardless of region/PF support. PersistentKeepalive
+    # is 25s, so a healthy tunnel's handshake should never be much older
+    # than that; allow generous slack for jitter.
+    hs=$(wg show pia latest-handshakes 2>/dev/null | awk 'NR==1{print $2}')
+    [ -z "$hs" ] && return 1
+    [ "$hs" -gt 0 ] 2>/dev/null || return 1
+    now=$(date +%s)
+    age=$((now - hs))
+    [ "$age" -lt 150 ]
+  else
+    # OpenVPN has no equivalent built-in freshness signal without a management
+    # socket. Fall back to confirming the process and interface are present -
+    # weaker than a true traffic check, but does not risk false positives on a
+    # healthy tunnel the way an external, region-specific probe can.
+    pgrep -x openvpn > /dev/null && ifconfig 2>/dev/null | grep -q "$VPN_DEVICE"
+  fi
 }
 
 # Reconnect the VPN in place (no container restart), triggered either by a
