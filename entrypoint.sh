@@ -785,19 +785,26 @@ printf "\n"
 PF_GATEWAY=""
 PF_CERT=""
 PF_CONNECT=""
+# Determine the VPN gateway/connect params unconditionally - needed for the
+# tunnel-liveness check later regardless of whether port forwarding itself
+# is enabled, not just when PORT_FORWARDING=true.
+if [ "$VPN_CLIENT" = "wireguard" ]; then
+  PF_GATEWAY=$wg_cn
+  PF_CERT="--cacert /app/ca.rsa.4096.crt"
+  PF_CONNECT="--connect-to $wg_cn::$wg_ip:"
+else
+  PF_GATEWAY=$(route -n | grep -e 'UG.*tun0' | awk '{print $2}' | awk 'NR==1{print $1}')
+  PF_CERT="-k"
+fi
+
 if is_enabled "$PORT_FORWARDING"; then
   printf "[INFO] Setting up port forwarding\n"
 
   # Setup the port forwading parameters depending on the VPN client
   if [ "$VPN_CLIENT" = "wireguard" ]; then
     printf " * Using Wireguard port forwarding\n"
-    PF_GATEWAY=$wg_cn
-    PF_CERT="--cacert /app/ca.rsa.4096.crt"
-    PF_CONNECT="--connect-to $wg_cn::$wg_ip:"
   else
     printf " * Using OpenVPN port forwarding\n"
-    PF_GATEWAY=$(route -n | grep -e 'UG.*tun0' | awk '{print $2}' | awk 'NR==1{print $1}')
-    PF_CERT="-k"
   fi
 
   # Get a token from PIA to authenticate the port forwarding request
@@ -906,11 +913,26 @@ if [ -f /config/post-vpn-connect.sh ]; then
   printf "[INFO] Running post-vpn-connect.sh\n"
   . /config/post-vpn-connect.sh
 fi
-# Reconnect the VPN in place (no container restart) when the port-forward refresh fails.
-# Re-establishes the tunnel and re-binds the SAME port (reused payload/signature) so qBittorrent
-# keeps running and its configured port stays valid.
+# Probes the VPN tunnel through the same PIA gateway endpoint used for port
+# forwarding (:19999) - reused purely as a liveness signal, not to request a
+# port. Any response (even an auth error) proves the tunnel is passing
+# traffic; a timeout/connection failure means it silently died. Works for
+# both WireGuard and OpenVPN, and independent of PORT_FORWARDING - this is
+# what catches a tunnel that stays "up" (interface present) but has quietly
+# stopped passing traffic, which otherwise shows no error and just hangs.
+tunnel_alive() {
+  [ -z "$PF_GATEWAY" ] && return 0
+  resp=$(curl --connect-timeout 5 --max-time 8 -sk $PF_CONNECT $PF_CERT "https://$PF_GATEWAY:19999/getSignature" 2>/dev/null)
+  [ -n "$resp" ]
+}
+
+# Reconnect the VPN in place (no container restart), triggered either by a
+# failed port-forward refresh or by tunnel_alive() detecting a dead tunnel.
+# Re-establishes the tunnel and, if port forwarding is in use, re-binds the
+# SAME port (reused payload/signature) so qBittorrent keeps running and its
+# configured port stays valid.
 reconnect_vpn() {
-  printf "\n[WARNING] Port forwarding refresh failed - reconnecting VPN in place (no container restart)\n"
+  printf "\n[WARNING] Reconnecting VPN in place (no container restart)\n"
   if [ "$VPN_CLIENT" = "wireguard" ]; then
     doas -u root wg-quick down pia > /dev/null 2>&1
     doas -u root wg-quick up pia > "$VPN_LOG_DIR/wireguard.log" 2>&1
@@ -920,9 +942,20 @@ reconnect_vpn() {
     ip route add 128.0.0.0/1 dev pia 2>/dev/null
     ip route flush cache 2>/dev/null
   fi
-  binding=$(curl --connect-timeout 8 --max-time 15 -sGk $PF_CONNECT $PF_CERT --data-urlencode "payload=$payload" --data-urlencode "signature=$signature" https://$PF_GATEWAY:19999/bindPort)
-  if [ "$(echo "$binding" | jq -r '.status')" = "OK" ]; then
-    printf "[INFO] Reconnected - port forwarding restored (port $PF_PORT)\n"
+
+  if is_enabled "$PORT_FORWARDING"; then
+    binding=$(curl --connect-timeout 8 --max-time 15 -sGk $PF_CONNECT $PF_CERT --data-urlencode "payload=$payload" --data-urlencode "signature=$signature" https://$PF_GATEWAY:19999/bindPort)
+    if [ "$(echo "$binding" | jq -r '.status')" = "OK" ]; then
+      printf "[INFO] Reconnected - port forwarding restored (port $PF_PORT)\n"
+      return 0
+    fi
+    return 1
+  fi
+
+  # No port forwarding in use - a successful reconnect just needs the tunnel
+  # itself back up.
+  if tunnel_alive; then
+    printf "[INFO] Reconnected - tunnel is back up\n"
     return 0
   fi
   return 1
@@ -961,11 +994,12 @@ fi
 exec doas -u qbtUser sh -c "umask ${UMASK:-022}; exec qbittorrent-nox --webui-port=$WEBUI_PORT --profile=/config" &
 
 i=1
+vpn_fail_count=0
 while : ; do
 	sleep 1
   if [ $i -gt 600 ]; then
-pf_fail_count=0
     i=1
+    need_reconnect=false
     if is_enabled "$PORT_FORWARDING"; then
       binding=$(curl --connect-timeout 8 --max-time 15 -sGk \
             $PF_CONNECT \
@@ -978,15 +1012,28 @@ pf_fail_count=0
 #      printf "Port Forwarding - $(echo $binding | jq -r '.message')\n"
 
       if [ "$(echo "$binding" | jq -r '.status')" != "OK" ]; then
-        if reconnect_vpn; then
-          pf_fail_count=0
-        else
-          pf_fail_count=$((pf_fail_count + 1))
-          printf "[WARNING] Reconnect attempt $pf_fail_count did not restore the connection\n"
-          if [ "$pf_fail_count" -ge 3 ]; then
-            printf "[ERROR] Could not recover after 3 reconnect attempts - restarting container\n"
-            exit 5
-          fi
+        printf "[WARNING] Port forwarding refresh failed\n"
+        need_reconnect=true
+      fi
+    else
+      # No port forwarding to rebind, but the tunnel itself can still die
+      # silently (interface stays up, no error - torrents just hang with no
+      # indication why). Verify it is actually passing traffic.
+      if ! tunnel_alive; then
+        printf "[WARNING] Tunnel appears dead (no response from VPN gateway)\n"
+        need_reconnect=true
+      fi
+    fi
+
+    if [ "$need_reconnect" = "true" ]; then
+      if reconnect_vpn; then
+        vpn_fail_count=0
+      else
+        vpn_fail_count=$((vpn_fail_count + 1))
+        printf "[WARNING] Reconnect attempt $vpn_fail_count did not restore the connection\n"
+        if [ "$vpn_fail_count" -ge 3 ]; then
+          printf "[ERROR] Could not recover after 3 reconnect attempts - restarting container\n"
+          exit 5
         fi
       fi
     fi
@@ -997,3 +1044,4 @@ pf_fail_count=0
   fi
   i=$((i + 1))
 done
+
