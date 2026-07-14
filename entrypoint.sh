@@ -1102,17 +1102,25 @@ while : ; do
         vpn_fail_count=0
       else
         vpn_fail_count=$((vpn_fail_count + 1))
-        # Keep retrying indefinitely rather than exiting and relying on the
-        # container's restart policy - that is an external Docker setting
-        # that can silently be missing or misconfigured (e.g. a container
-        # created before --restart unless-stopped was added, or never
-        # recreated since), in which case exiting here would leave the
-        # container stopped indefinitely with no recovery at all. Escalate to
-        # [ERROR] after repeated failures for visibility, but never give up.
-        if [ "$vpn_fail_count" -ge 3 ]; then
-          printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] Reconnect attempt $vpn_fail_count failed - still retrying every ~10 min. In-place recovery cannot refresh an expired PIA token (the kill switch blocks the token endpoint while the tunnel is down), so if this persists, restart the container to recover, and set '--restart unless-stopped' so it can do that automatically.\n"
-        else
-          printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Reconnect attempt $vpn_fail_count did not restore the connection\n"
+        printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Reconnect attempt $vpn_fail_count did not restore the connection\n"
+        # In-place reconnect re-registers the WireGuard KEY, but it cannot refresh
+        # an expired PIA TOKEN - the token endpoint is a different host the kill
+        # switch correctly blocks while the tunnel is down. Only a full restart can
+        # get a new token (startup fetches one before the firewall is built). So
+        # after ~1h of failed in-place attempts - long enough that transient
+        # outages have had time to self-heal and an expired token is the likely
+        # cause - exit for a clean restart. NOTE: this REQUIRES a restart policy;
+        # without one the container stays stopped (docker update --restart
+        # unless-stopped <name>). The template sets it for new installs.
+        if [ "$vpn_fail_count" -ge 6 ]; then
+          printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] In-place reconnect failed ${vpn_fail_count}x (~1h) - exiting for a full restart to obtain a fresh PIA token. If the container does not come back, set '--restart unless-stopped'.\n"
+          # Save qBittorrent resume data before exiting so torrents do not re-check.
+          qbt_pid=$(pgrep -x qbittorrent-nox)
+          if [ -n "$qbt_pid" ]; then
+            kill -TERM "$qbt_pid" 2>/dev/null
+            while pgrep -x qbittorrent-nox > /dev/null; do sleep 1; done
+          fi
+          exit 5
         fi
       fi
     fi
