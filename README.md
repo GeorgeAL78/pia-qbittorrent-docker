@@ -57,7 +57,7 @@ The title-bar version comes from an `X-Docker-Version` response header this imag
 - PIA port forwarding for seeding
 - PIA server list fetched directly from PIA at build time — every image ships with the current region list
 - Kill switch — all IPv4 and IPv6 traffic blocked if the VPN drops
-- Auto-healing VPN — detects a dead/dropped tunnel and reconnects itself: re-registers the WireGuard key in place, or restarts to refresh an expired PIA token
+- Auto-healing VPN — detects a dead/dropped tunnel and reconnects in place (WireGuard re-registers its key, OpenVPN restarts the client and re-authenticates), escalating to a full container restart if the in-place reconnect can't recover it
 - Multi-arch images — `amd64` and `arm64`
 - VPN network interface auto-detected and locked (WireGuard `pia` / OpenVPN `tun0`)
 - Configurable UID/GID for correct file ownership on Unraid and NAS systems
