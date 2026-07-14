@@ -74,13 +74,13 @@ The title-bar version comes from an `X-Docker-Version` response header this imag
 
 | Component | Version |
 |-----------|---------|
-| Alpine Linux | 3.23 |
+| Alpine Linux | 3.24 |
 | qBittorrent | 5.2.3 |
-| libtorrent | 2.0.12 |
+| libtorrent | 2.0.13 |
 | Boost | 1.91.0 |
-| OpenVPN | 2.6.20 |
-| WireGuard | 1.0.20250521 |
-| IPTables | 1.8.11 |
+| OpenVPN | 2.7.3 |
+| WireGuard | 1.0.20260223 |
+| IPTables | 1.8.13 |
 
 ---
 
