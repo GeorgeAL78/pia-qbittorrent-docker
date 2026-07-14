@@ -950,10 +950,49 @@ tunnel_alive() {
 # Re-establishes the tunnel and, if port forwarding is in use, re-binds the
 # SAME port (reused payload/signature) so qBittorrent keeps running and its
 # configured port stays valid.
+# Re-register a fresh WireGuard key with PIA using the EXISTING token, then rewrite
+# /etc/wireguard/pia.conf. A WireGuard tunnel can die because the PIA server dropped
+# our key registration (e.g. the server restarted); re-upping the same config then
+# loops forever (seen live: 100+ failed reconnects). addKey re-registers the key and
+# targets the SAME server IP:port the kill switch already permits, so it works with
+# the tunnel down and needs no firewall change (leak-safe). NOTE: we deliberately do
+# NOT fetch a fresh *token* here - the token endpoint is privateinternetaccess.com,
+# not the VPN server, so the kill switch (correctly) blocks it while the tunnel is
+# down. If the token itself has expired, this returns non-zero and only a container
+# restart (which re-runs startup and gets a new token before the firewall is built)
+# can recover. Returns 0 on success.
+wg_refresh_config() {
+  [ -z "$piatoken" ] && return 1
+  refresh_pk="$(wg genkey)"
+  refresh_pub="$(echo "$refresh_pk" | wg pubkey)"
+  refresh_json="$(curl -s --connect-timeout 8 --max-time 15 -G --connect-to "$wg_cn::$wg_ip:" --cacert /app/ca.rsa.4096.crt --data-urlencode "pt=$piatoken" --data-urlencode "pubkey=$refresh_pub" "https://$wg_cn:$wg_port/addKey")"
+  [ "$(echo "$refresh_json" | jq -r '.status')" = "OK" ] || return 1
+  mkdir -p /etc/wireguard
+  cat > /etc/wireguard/pia.conf <<WGEOF
+[Interface]
+PrivateKey = ${refresh_pk}
+Address = $(echo "$refresh_json" | jq -r '.peer_ip')
+Table = off
+
+[Peer]
+PublicKey = $(echo "$refresh_json" | jq -r '.server_key')
+AllowedIPs = 0.0.0.0/0
+Endpoint = ${WG_IP}:$(echo "$refresh_json" | jq -r '.server_port')
+PersistentKeepalive = 25
+WGEOF
+  return 0
+}
+
 reconnect_vpn() {
   printf "\n[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Reconnecting VPN in place (no container restart)\n"
   if [ "$VPN_CLIENT" = "wireguard" ]; then
     doas -u root wg-quick down pia > /dev/null 2>&1
+    # The PIA server may have dropped our key registration (e.g. it restarted);
+    # re-register a fresh key so the handshake can actually re-establish. If this
+    # fails (e.g. the token expired), fall through and retry the existing config.
+    if wg_refresh_config; then
+      printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Re-registered WireGuard key with PIA\n"
+    fi
     doas -u root wg-quick up pia > "$VPN_LOG_DIR/wireguard.log" 2>&1
     wg set pia fwmark 51820 2>/dev/null
     ip rule add fwmark 51820 table 128 priority 100 2>/dev/null
@@ -1071,7 +1110,7 @@ while : ; do
         # container stopped indefinitely with no recovery at all. Escalate to
         # [ERROR] after repeated failures for visibility, but never give up.
         if [ "$vpn_fail_count" -ge 3 ]; then
-          printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] Reconnect attempt $vpn_fail_count did not restore the connection - still retrying every ~10 min. If this persists, check your PIA credentials/region and network connectivity.\n"
+          printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] Reconnect attempt $vpn_fail_count failed - still retrying every ~10 min. In-place recovery cannot refresh an expired PIA token (the kill switch blocks the token endpoint while the tunnel is down), so if this persists, restart the container to recover, and set '--restart unless-stopped' so it can do that automatically.\n"
         else
           printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Reconnect attempt $vpn_fail_count did not restore the connection\n"
         fi
