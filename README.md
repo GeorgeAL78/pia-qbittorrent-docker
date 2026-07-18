@@ -79,7 +79,7 @@ The title-bar version comes from an `X-Docker-Version` response header this imag
 | qBittorrent | 5.2.3 |
 | libtorrent | 2.0.13 |
 | Boost | 1.91.0 |
-| OpenVPN | 2.7.3 |
+| OpenVPN | 2.7.5 |
 | WireGuard | 1.0.20260223 |
 | IPTables | 1.8.13 |
 
