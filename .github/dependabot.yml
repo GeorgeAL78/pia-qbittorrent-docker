@@ -1,0 +1,31 @@
+version: 2
+updates:
+  # Keep GitHub Actions up to date (actions/checkout, docker/*, softprops/*, etc.).
+  # This automates the action-version bumps we otherwise do by hand — e.g. the
+  # Node-20-runtime deprecation warnings clear as maintainers ship node24 releases.
+  # All action bumps are grouped into a single PR to keep the noise down.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "dependencies"
+
+  # Watch the Alpine base image tag for a new major (e.g. 3.25 when it releases).
+  # NOTE: Dependabot CANNOT see qBittorrent / libtorrent / Boost / Ninja (curl'd
+  # from release URLs in RUN steps) or the apk packages (OpenVPN / WireGuard /
+  # iptables / Qt6) — those still require the manual version-check routine.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "docker"
+    labels:
+      - "dependencies"
