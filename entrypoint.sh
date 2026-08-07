@@ -311,9 +311,19 @@ if [ -f /proc/net/if_inet6 ] && ( [ $(sysctl -n net.ipv6.conf.all.disable_ipv6) 
     
     printf " * Got PIA region data\n"
     
-    # Extract wg_cn and wg_ip from the region data
+    # Extract wg_cn and wg_ip from the region data (first server is the default)
     wg_cn=$(echo "$regiondata" | jq -r ".servers.wg | .[0].cn")
     wg_ip=$(echo "$regiondata" | jq -r ".servers.wg | .[0].ip")
+
+    # All servers in this region, as "ip cn" lines - used to fail over to a
+    # different server if the default one stops working. Every one of these IPs
+    # is added to the kill switch below (VPNIPS), so failover never needs a
+    # firewall change at runtime.
+    WG_SERVERS=$(echo "$regiondata" | jq -r '.servers.wg[] | "\(.ip) \(.cn)"')
+    wg_server_count=$(echo "$WG_SERVERS" | grep -c .)
+    if [ "$wg_server_count" -gt 1 ]; then
+      printf " * %s servers available in this region (failover enabled)\n" "$wg_server_count"
+    fi
 
     # Get wg_port from groups (this part doesn't depend on region selection)
     wg_port=$(jq -r '.groups.wg | .[0] | .ports | .[0]' /app/data.json)
@@ -359,8 +369,12 @@ if [ -f /proc/net/if_inet6 ] && ( [ $(sysctl -n net.ipv6.conf.all.disable_ipv6) 
     PersistentKeepalive = 25
 EOF
 
-  # Get VPN Server for firewall
-  VPNIPS=$WG_IP
+  # Get VPN Servers for firewall. ALL of the region's servers are allowed (not
+  # just the connected one) so reconnect can fail over to another server without
+  # modifying the firewall. They all listen on the same port, and each is a PIA
+  # server we would legitimately connect to, so this does not widen exposure
+  # beyond "this region's PIA servers on the WireGuard port".
+  VPNIPS=$(echo "$WG_SERVERS" | awk '{print $1}')
   PORT=$(echo "$wireguard_json" | jq -r '.server_port')
   printf "DONE\n"
 
@@ -965,8 +979,36 @@ wg_refresh_config() {
   [ -z "$piatoken" ] && return 1
   refresh_pk="$(wg genkey)"
   refresh_pub="$(echo "$refresh_pk" | wg pubkey)"
-  refresh_json="$(curl -s --connect-timeout 8 --max-time 15 -G --connect-to "$wg_cn::$wg_ip:" --cacert /app/ca.rsa.4096.crt --data-urlencode "pt=$piatoken" --data-urlencode "pubkey=$refresh_pub" "https://$wg_cn:$wg_port/addKey")"
-  [ "$(echo "$refresh_json" | jq -r '.status')" = "OK" ] || return 1
+
+  # Try each server in the region until one registers the key. The default
+  # server is first; the rest are failover targets for when it is down or has
+  # been decommissioned (retrying only the dead server would never recover).
+  refresh_json=""
+  refresh_ok=false
+  for_ip=""
+  for_cn=""
+  echo "$WG_SERVERS" | while read -r s_ip s_cn; do
+    [ -z "$s_ip" ] && continue
+    r="$(curl -s --connect-timeout 8 --max-time 15 -G --connect-to "$s_cn::$s_ip:" --cacert /app/ca.rsa.4096.crt --data-urlencode "pt=$piatoken" --data-urlencode "pubkey=$refresh_pub" "https://$s_cn:$wg_port/addKey")"
+    if [ "$(echo "$r" | jq -r '.status' 2>/dev/null)" = "OK" ]; then
+      printf '%s\n' "$r" > /tmp/.wg_refresh.json
+      printf '%s %s\n' "$s_ip" "$s_cn" > /tmp/.wg_refresh.server
+      break
+    fi
+  done
+  [ -s /tmp/.wg_refresh.json ] || return 1
+  refresh_json="$(cat /tmp/.wg_refresh.json)"
+  for_ip="$(awk '{print $1}' /tmp/.wg_refresh.server)"
+  for_cn="$(awk '{print $2}' /tmp/.wg_refresh.server)"
+  rm -f /tmp/.wg_refresh.json /tmp/.wg_refresh.server
+  # Point the live server vars at whichever server accepted us, so the tunnel
+  # config and any later refresh use it.
+  if [ "$for_ip" != "$wg_ip" ]; then
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Failed over to VPN server $for_ip ($for_cn)\n"
+  fi
+  wg_ip="$for_ip"
+  wg_cn="$for_cn"
+  WG_IP="$for_ip"
   mkdir -p /etc/wireguard
   cat > /etc/wireguard/pia.conf <<WGEOF
 [Interface]
@@ -1067,8 +1109,30 @@ exec doas -u qbtUser sh -c "umask ${UMASK:-022}; exec qbittorrent-nox --webui-po
 
 i=1
 vpn_fail_count=0
+tunnel_state=up          # last observed state, for transition logging
+tunnel_down_since=0      # epoch seconds when it went down
 while : ; do
 	sleep 1
+
+  # Sample tunnel health every 30s and log only the transitions, so brief
+  # outages (e.g. a modem reboot) that WireGuard heals by itself still leave
+  # a trail. Logging only - the 10-min block below owns recovery.
+  if [ $((i % 30)) -eq 0 ]; then
+    if tunnel_alive; then
+      if [ "$tunnel_state" = "down" ]; then
+        down_for=$(( $(date +%s) - tunnel_down_since ))
+        printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Tunnel recovered (was down ~${down_for}s)\n"
+        tunnel_state=up
+      fi
+    else
+      if [ "$tunnel_state" = "up" ]; then
+        tunnel_down_since=$(date +%s)
+        printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Tunnel went down\n"
+        tunnel_state=down
+      fi
+    fi
+  fi
+
   if [ $i -gt 600 ]; then
     i=1
     need_reconnect=false
