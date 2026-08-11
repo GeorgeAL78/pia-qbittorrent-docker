@@ -165,13 +165,23 @@ fi
 if [ -z $WEBUI_PORT ]; then
   WEBUI_PORT=8888
 fi
-if [ `echo $WEBUI_PORT | ack "^[0-9]+$"` != $WEBUI_PORT ]; then
-  printf "WEBUI_PORT is not a valid number\n"
-  exit 1
-elif [ $WEBUI_PORT -lt 1024 ]; then
+# Validate WEBUI_PORT. The previous check was:
+#   if [ `echo $WEBUI_PORT | ack "^[0-9]+$"` != $WEBUI_PORT ]
+# which did the OPPOSITE of its job for non-numeric input: ack printed nothing,
+# so the test became [ != abc ], which errors ("unknown operand") and evaluates
+# false - so an invalid port was ACCEPTED and passed on to the iptables rules and
+# qbittorrent-nox. The numeric comparisons below would then error too. A POSIX
+# case avoids the command substitution, the word splitting and the ack dependency.
+case "$WEBUI_PORT" in
+  *[!0-9]*|"")
+    printf "WEBUI_PORT is not a valid number\n"
+    exit 1
+    ;;
+esac
+if [ "$WEBUI_PORT" -lt 1024 ]; then
   printf "WEBUI_PORT cannot be a privileged port under port 1024\n"
   exit 1
-elif [ $WEBUI_PORT -gt 65535 ]; then
+elif [ "$WEBUI_PORT" -gt 65535 ]; then
   printf "WEBUI_PORT cannot be a port higher than the maximum port 65535\n"
   exit 1
 fi
@@ -1023,7 +1033,6 @@ wg_refresh_config() {
   # server is first; the rest are failover targets for when it is down or has
   # been decommissioned (retrying only the dead server would never recover).
   refresh_json=""
-  refresh_ok=false
   for_ip=""
   for_cn=""
   echo "$WG_SERVERS" | while read -r s_ip s_cn; do
