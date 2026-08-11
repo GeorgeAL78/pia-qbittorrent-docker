@@ -122,6 +122,7 @@ docker run -d --init --name=pia-qbittorrent --restart unless-stopped \
 | `WEBUI_INTERFACES` | | Network interfaces for Web UI access e.g. `eth0,eth1` |
 | `ALLOW_LOCAL_SUBNET_TRAFFIC` | `false` | Allow LAN devices to connect directly to the container |
 | `EXTRA_SUBNETS` | | Comma-separated extra subnets to allow through the kill switch (e.g. for reverse proxies or *arr apps on a different Docker network) |
+| `OPEN_ADDITIONAL_LOCAL_PORTS` | | Comma-separated extra LAN ports to open, e.g. `8989,7878`. For containers sharing this container's network (`network_mode: container:...`) whose web UIs would otherwise be blocked by the kill switch |
 | `DNS_SERVERS` | `9.9.9.9,149.112.112.112` | Comma-separated DNS servers |
 | `LEGACY_IPTABLES` | `false` | Use legacy iptables instead of nftables |
 | `TZ` | | Timezone e.g. `America/New_York` |
