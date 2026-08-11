@@ -1057,6 +1057,20 @@ reconnect_vpn() {
     done
   fi
 
+  # Wait for the tunnel to actually come up before judging the reconnect.
+  # WireGuard needs a few seconds for its first handshake, and the port-forward
+  # rebind below runs THROUGH the tunnel, so probing immediately would fail even
+  # on a reconnect that is about to succeed.
+  wait_i=0
+  while [ $wait_i -lt 45 ]; do
+    tunnel_alive && break
+    sleep 1
+    wait_i=$((wait_i + 1))
+  done
+  if ! tunnel_alive; then
+    return 1
+  fi
+
   if is_enabled "$PORT_FORWARDING"; then
     binding=$(curl --connect-timeout 8 --max-time 15 -sGk $PF_CONNECT $PF_CERT --data-urlencode "payload=$payload" --data-urlencode "signature=$signature" https://$PF_GATEWAY:19999/bindPort)
     if [ "$(echo "$binding" | jq -r '.status')" = "OK" ]; then
@@ -1066,13 +1080,10 @@ reconnect_vpn() {
     return 1
   fi
 
-  # No port forwarding in use - a successful reconnect just needs the tunnel
-  # itself back up.
-  if tunnel_alive; then
-    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Reconnected - tunnel is back up\n"
-    return 0
-  fi
-  return 1
+  # No port forwarding in use - the tunnel being back up (verified above) is
+  # all a successful reconnect needs.
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Reconnected - tunnel is back up\n"
+  return 0
 }
 
 
