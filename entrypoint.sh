@@ -276,7 +276,7 @@ if [ -f /proc/net/if_inet6 ] && ( [ $(sysctl -n net.ipv6.conf.all.disable_ipv6) 
     sysctl -w net.ipv6.conf.default.disable_ipv6=1 >/dev/null 2>&1 || true
   fi
 
-  pia_gen=$(curl -s -u "$(sed '1!d' /auth.conf):$(sed '2!d' /auth.conf)" \
+  pia_gen=$(curl -s --connect-timeout 8 --max-time 20 -u "$(sed '1!d' /auth.conf):$(sed '2!d' /auth.conf)" \
     "https://privateinternetaccess.com/gtoken/generateToken")
 
   if [ "$(echo "$pia_gen" | jq -r '.status')" != "OK" ]; then
@@ -337,15 +337,54 @@ if [ -f /proc/net/if_inet6 ] && ( [ $(sysctl -n net.ipv6.conf.all.disable_ipv6) 
   WG_HOSTNAME="$(echo $regiondata | jq -r '.servers.wg[0].cn')"
 
   printf " * Getting wireguard config for $server...\n"
-  wireguard_json="$(curl -s -G \
-    --connect-to "$wg_cn::$wg_ip:" \
-    --cacert "/app/ca.rsa.4096.crt" \
-    --data-urlencode "pt=$piatoken" \
-    --data-urlencode "pubkey=$publicKey" \
-    "https://$wg_cn:$wg_port/addKey" )"
+  # Try each server in the region until one registers the key.
+  # Two bugs are fixed here. (1) There was NO TIMEOUT on this call, so a server
+  # that accepted the connection but never answered hung startup indefinitely -
+  # the container just sat at this line forever with no error. (2) Only the
+  # first server was ever tried, so a dead one could not be recovered from even
+  # when the region had a healthy server; every restart retried the same dead
+  # server. Failover already existed for reconnects - startup needs it too, and
+  # arguably more, since nothing else runs until this succeeds.
+  rm -f /tmp/.wg_start.json /tmp/.wg_start.server
+  echo "$WG_SERVERS" | while read -r s_ip s_cn; do
+    [ -z "$s_ip" ] && continue
+    r="$(curl -s --connect-timeout 8 --max-time 20 -G \
+      --connect-to "$s_cn::$s_ip:" \
+      --cacert "/app/ca.rsa.4096.crt" \
+      --data-urlencode "pt=$piatoken" \
+      --data-urlencode "pubkey=$publicKey" \
+      "https://$s_cn:$wg_port/addKey")"
+    if [ "$(echo "$r" | jq -r '.status' 2>/dev/null)" = "OK" ]; then
+      printf '%s\n' "$r" > /tmp/.wg_start.json
+      printf '%s %s\n' "$s_ip" "$s_cn" > /tmp/.wg_start.server
+      break
+    fi
+    printf "   * Server $s_ip did not respond - trying next\n"
+  done
+  if [ -s /tmp/.wg_start.json ]; then
+    wireguard_json="$(cat /tmp/.wg_start.json)"
+    sel_ip="$(awk '{print $1}' /tmp/.wg_start.server)"
+    sel_cn="$(awk '{print $2}' /tmp/.wg_start.server)"
+    if [ "$sel_ip" != "$wg_ip" ]; then
+      printf "   * Using failover server $sel_ip ($sel_cn)\n"
+    fi
+    # Point every server var at whichever one accepted us, so the tunnel config,
+    # the firewall endpoint and any later refresh all use the same server.
+    wg_ip="$sel_ip"
+    wg_cn="$sel_cn"
+    WG_IP="$sel_ip"
+    WG_HOSTNAME="$sel_cn"
+  else
+    wireguard_json=""
+  fi
+  rm -f /tmp/.wg_start.json /tmp/.wg_start.server
 
   if [ "$(echo "$wireguard_json" | jq -r '.status')" != "OK" ]; then
-    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] Getting wireguard Settings - $(echo "$wireguard_json" | jq -r '.status')\n"
+    if [ -z "$wireguard_json" ]; then
+      printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] No server in region '$server' would register our key (tried all of them). PIA may be having trouble, or try another region.\n"
+    else
+      printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] Getting wireguard Settings - $(echo "$wireguard_json" | jq -r '.status')\n"
+    fi
     exit 5
   fi
 
