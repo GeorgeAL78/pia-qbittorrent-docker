@@ -663,6 +663,30 @@ for webui_interface in  $(echo $WEBUI_INTERFACES | sed "s/,/ /g"); do
   printf "DONE\n"
 done
 
+# Optionally open extra LAN ports. This is for the common setup where another
+# container shares this one's network namespace (network_mode: container:...) to
+# route its traffic through the VPN - without this, its ports are unreachable
+# because the kill switch drops everything not explicitly allowed. Only INPUT
+# rules on the physical interface are added: the return traffic is already covered
+# by the established/related rule, and nothing here creates a path out of the
+# tunnel, so the kill switch is not weakened.
+if [ -n "$OPEN_ADDITIONAL_LOCAL_PORTS" ]; then
+  printf " * Opening additional LAN ports: $OPEN_ADDITIONAL_LOCAL_PORTS\n"
+  for webui_interface in $(echo $WEBUI_INTERFACES | sed "s/,/ /g"); do
+    for opened_port in $(echo $OPEN_ADDITIONAL_LOCAL_PORTS | sed "s/,/ /g"); do
+      case "$opened_port" in
+        *[!0-9]*|"")
+          printf "   * * Skipping invalid port '$opened_port'\n"
+          continue
+          ;;
+      esac
+      printf "   * * Opening port $opened_port on interface: $webui_interface..."
+      iptables -A INPUT -i "$webui_interface" -p tcp --dport "$opened_port" -j ACCEPT
+      printf "DONE\n"
+    done
+  done
+fi
+
 printf " * Creating VPN routes..."
 ip rule add from $(ip route get 1 | ack -o '(?<=src )(\S+)') table 128
 #if [ "$VPN_CLIENT" = "wireguard" ]; then
@@ -743,10 +767,22 @@ fi
 # qBittorrent config
 ############################################
 printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Checking qBittorrent config\n"
-if [ ! -e /config/qBittorrent/config/qBittorrent.conf ]; then
-	mkdir -p /config/qBittorrent/config && cp /app/qBittorrent.conf /config/qBittorrent/config/qBittorrent.conf
-	chmod 755 /config/qBittorrent/config/qBittorrent.conf
-	printf " * Copying default qBittorrent config\n"
+QBT_CONF=/config/qBittorrent/config/qBittorrent.conf
+# Regenerate the config if it is missing, empty, or does not look like a real
+# qBittorrent config. Previously only the "missing" case was handled, so a
+# truncated or corrupted file (power loss mid-write, full disk) was left in place,
+# then rewritten by the sed calls below, and qBittorrent would fail to start or
+# come up with broken settings. A damaged config is now moved aside rather than
+# silently discarded, so the user can recover anything from it.
+if [ ! -s "$QBT_CONF" ] || ! grep -q "^\[Preferences\]" "$QBT_CONF" 2>/dev/null; then
+  if [ -f "$QBT_CONF" ]; then
+    QBT_CONF_BACKUP="$QBT_CONF.bak.$(date +%Y%m%d_%H%M%S)"
+    mv "$QBT_CONF" "$QBT_CONF_BACKUP"
+    printf " * Existing qBittorrent config was empty or unreadable - backed up to %s\n" "$QBT_CONF_BACKUP"
+  fi
+  mkdir -p /config/qBittorrent/config && cp /app/qBittorrent.conf "$QBT_CONF"
+  chmod 755 "$QBT_CONF"
+  printf " * Copying default qBittorrent config\n"
 fi
 
 # Updating config with user prefrences 
