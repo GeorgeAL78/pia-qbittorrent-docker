@@ -625,10 +625,26 @@ OUTPUT=$(iptables -P FORWARD DROP 2>&1)
 exitOnError $? "$OUTPUT"
 printf "DONE\n"
 printf "   * Block all IPv6 traffic..."
+# Block IPv6 for BOTH VPN clients. The previous fallback branch only PRINTED that
+# it had disabled IPv6 via sysctl - it never actually ran sysctl. That left a real
+# leak: the sysctl disable elsewhere is inside the WireGuard-only block, so an
+# OpenVPN container whose ip6tables was unavailable had IPv6 neither firewalled nor
+# disabled, while the log claimed otherwise. Now the fallback really runs, and if
+# IPv6 cannot be blocked at all we fail closed rather than leak.
 if ip6tables -F 2>/dev/null && ip6tables -P INPUT DROP 2>/dev/null && ip6tables -P OUTPUT DROP 2>/dev/null && ip6tables -P FORWARD DROP 2>/dev/null; then
   printf "DONE\n"
+elif [ ! -f /proc/net/if_inet6 ]; then
+  printf "DONE (no IPv6 stack present)\n"
 else
-  printf "WARNING - ip6tables unavailable; IPv6 disabled via sysctl instead\n"
+  sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1
+  sysctl -w net.ipv6.conf.default.disable_ipv6=1 >/dev/null 2>&1
+  if [ "$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)" = "1" ]; then
+    printf "ip6tables unavailable - IPv6 disabled via sysctl instead\n"
+  else
+    printf "FAILED\n"
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] Cannot block IPv6: ip6tables is unavailable and sysctl could not disable it, but this host has an IPv6 stack. Refusing to start rather than risk an IPv6 leak.\n"
+    exit 1
+  fi
 fi
 
 printf " * Creating general rules\n"
@@ -1008,9 +1024,29 @@ fi
 # Run post-vpn-connect hook script
 ############################################
 
+# Run the user hook. SECURITY: this used to be "." (sourced), which executed the
+# script INSIDE this root shell. /config is chowned to qbtUser earlier, so anything
+# able to write that volume - including a compromised qBittorrent - could drop a
+# file here and get root in the container on the next start. Now it runs as a
+# separate process, and only as root when the file is root-owned and not writable by
+# anyone else; otherwise it is dropped to qbtUser.
 if [ -f /config/post-vpn-connect.sh ]; then
-  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Running post-vpn-connect.sh\n"
-  . /config/post-vpn-connect.sh
+  hook_uid=$(stat -c %u /config/post-vpn-connect.sh 2>/dev/null)
+  hook_perm=$(stat -c %a /config/post-vpn-connect.sh 2>/dev/null)
+  # Check the GROUP and OTHER digits separately - looking at only the last digit
+  # would miss group-writable modes like 775 or 764.
+  hook_grp=$(printf "%s" "$hook_perm" | tail -c 2 | cut -c1)
+  hook_oth=$(printf "%s" "$hook_perm" | tail -c 1)
+  hook_group_or_other_writable=no
+  case "$hook_grp" in 2|3|6|7) hook_group_or_other_writable=yes ;; esac
+  case "$hook_oth" in 2|3|6|7) hook_group_or_other_writable=yes ;; esac
+  if [ "$hook_uid" = "0" ] && [ "$hook_group_or_other_writable" = "no" ]; then
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Running post-vpn-connect.sh (as root)\n"
+    sh /config/post-vpn-connect.sh
+  else
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Running post-vpn-connect.sh (as qbtUser - not root-owned)\n"
+    doas -u qbtUser sh /config/post-vpn-connect.sh
+  fi
 fi
 # Checks the VPN tunnel is actually alive, independent of PORT_FORWARDING -
 # this is what catches a tunnel that stays "up" (interface present) but has
