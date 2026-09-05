@@ -951,8 +951,25 @@ if [ "$VPN_CLIENT" = "wireguard" ]; then
   PF_CERT="--cacert /app/ca.rsa.4096.crt"
   PF_CONNECT="--connect-to $wg_cn::$wg_ip:"
 else
-  PF_GATEWAY=$(route -n | grep -e 'UG.*tun0' | awk '{print $2}' | awk 'NR==1{print $1}')
-  PF_CERT="-k"
+  # The OpenVPN port-forward endpoint is the tunnel gateway. Its certificate IS
+  # issued by PIA's CA, but carries the server hostname (e.g. montreal434), so a
+  # request addressed to the gateway IP fails hostname validation - which is why
+  # this previously fell back to -k and verified nothing at all. Read the CN from
+  # the certificate the gateway presents, then make the real requests verified
+  # against the bundled PIA CA using --connect-to, exactly as the WireGuard path
+  # does. The CN is only used for hostname matching: the trust anchor is still the
+  # bundled CA, so a certificate not signed by PIA is still rejected.
+  pf_ip=$(route -n | grep UG | grep tun0 | tr -s ' ' | cut -d' ' -f2 | head -1)
+  pf_cn=$(curl -sv -k --connect-timeout 5 --max-time 10 "https://$pf_ip:19999/" 2>&1 | grep -oE 'CN=[A-Za-z0-9_.-]+' | head -1 | cut -d= -f2)
+  if [ -n "$pf_cn" ]; then
+    PF_GATEWAY="$pf_cn"
+    PF_CONNECT="--connect-to $pf_cn::$pf_ip:"
+    PF_CERT="--cacert /app/ca.rsa.4096.crt"
+  else
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Could not read the port-forward gateway certificate - falling back to unverified TLS for port forwarding\n"
+    PF_GATEWAY="$pf_ip"
+    PF_CERT="-k"
+  fi
 fi
 
 if is_enabled "$PORT_FORWARDING"; then
@@ -1037,7 +1054,7 @@ if is_enabled "$PORT_FORWARDING"; then
     fi
 
     # Request port forwarding
-    binding=$(curl --connect-timeout 8 --max-time 15 -sGk \
+    binding=$(curl --connect-timeout 8 --max-time 15 -sG \
               $PF_CONNECT \
               $PF_CERT \
               --data-urlencode "payload=$payload" \
@@ -1235,7 +1252,7 @@ reconnect_vpn() {
   fi
 
   if is_enabled "$PORT_FORWARDING"; then
-    binding=$(curl --connect-timeout 8 --max-time 15 -sGk $PF_CONNECT $PF_CERT --data-urlencode "payload=$payload" --data-urlencode "signature=$signature" https://$PF_GATEWAY:19999/bindPort)
+    binding=$(curl --connect-timeout 8 --max-time 15 -sG $PF_CONNECT $PF_CERT --data-urlencode "payload=$payload" --data-urlencode "signature=$signature" https://$PF_GATEWAY:19999/bindPort)
     if [ "$(echo "$binding" | jq -r '.status')" = "OK" ]; then
       printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Reconnected - port forwarding restored (port $PF_PORT)\n"
       return 0
@@ -1311,7 +1328,7 @@ while : ; do
     i=1
     need_reconnect=false
     if is_enabled "$PORT_FORWARDING"; then
-      binding=$(curl --connect-timeout 8 --max-time 15 -sGk \
+      binding=$(curl --connect-timeout 8 --max-time 15 -sG \
             $PF_CONNECT \
             $PF_CERT \
             --data-urlencode "payload=$payload" \
