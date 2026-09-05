@@ -1427,7 +1427,7 @@ while : ; do
       fi
     fi
   fi
-  if ! `pgrep -x "qbittorrent-nox" > /dev/null` 
+  if ! pgrep -x "qbittorrent-nox" > /dev/null
   then
     break
   fi
