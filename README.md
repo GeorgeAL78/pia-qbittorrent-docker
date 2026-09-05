@@ -83,6 +83,12 @@ The title-bar version comes from an `X-Docker-Version` response header this imag
 | OpenVPN | 2.7.5 |
 | WireGuard | 1.0.20260223 |
 | IPTables | 1.8.13 |
+| Python 3 | Alpine 3.24 default |
+
+> **Note on Python:** `python3` is in the runtime image because qBittorrent's
+> search plugins require it. With `ack` and `perl` removed in v5.2.3-13 it is now
+> the largest optional component left, so it is an obvious target for a future
+> size pass - removing it would silently break the Search tab.
 
 ---
 

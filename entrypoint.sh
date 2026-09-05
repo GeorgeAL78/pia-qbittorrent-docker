@@ -234,6 +234,10 @@ fi
 if [ -z $VPN_LOG_DIR ]; then
   VPN_LOG_DIR=/logs
 fi
+# Unconditional: VPN_LOG_DIR is user-overridable, and leaving this unset would pass
+# an empty --status argument to openvpn. OpenVPN rewrites this file every 10s;
+# tunnel_alive() uses its age to tell a wedged process from a healthy one.
+OVPN_STATUS=/run/openvpn.status
 
 ############################################
 # SHOW PARAMETERS
@@ -762,8 +766,8 @@ printf " * Creating VPN routes..."
 ip rule add from $(ip route get 1 | sed -n 's/.*src \([^ ]*\).*/\1/p') table 128
 #if [ "$VPN_CLIENT" = "wireguard" ]; then
 #fi
-ip route add table 128 to $(ip route get 1 | sed -n 's/.*src \([^ ]*\).*/\1/p')/32 dev $(ip -4 route ls | grep default | sed -n 's/.*dev \([^ ]*\).*/\1/p')
-ip route add table 128 default via $(ip -4 route ls | grep default | sed -n 's/.*via \([^ ]*\).*/\1/p')
+ip route add table 128 to $(ip route get 1 | sed -n 's/.*src \([^ ]*\).*/\1/p')/32 dev $(ip -4 route ls | grep default | sed -n 's/.*dev \([^ ]*\).*/\1/p' | head -1)
+ip route add table 128 default via $(ip -4 route ls | grep default | sed -n 's/.*via \([^ ]*\).*/\1/p' | head -1)
 printf "DONE\n"
 
 printf " * Creating VPN rules\n"
@@ -831,7 +835,7 @@ if [ "$VPN_CLIENT" = "wireguard" ]; then
 
 else
   printf " * Opening OpenVPN\n"
-  openvpn --config config.ovpn --daemon --log "$VPN_LOG_DIR/openvpn.log" "$@"
+  openvpn --config config.ovpn --daemon --log "$VPN_LOG_DIR/openvpn.log" --status "$OVPN_STATUS" 10 "$@"
 fi
 
 ############################################
@@ -987,16 +991,42 @@ fi
 # which is why this once used -k and verified nothing. We read the CN the gateway
 # presents and then verify properly against the bundled CA.
 #
-# LIMITATION, deliberately accepted: because the CN comes from the peer rather than
-# from an authenticated source, this proves "a host holding a PIA-signed certificate"
-# rather than "this specific server". The WireGuard path is stronger, as its CN comes
-# from data.json. Pinning here would require parsing the chosen remote out of the
-# OpenVPN log and matching it against data.json; the peer IP is not always present in
-# that list, so it is not a drop-in. This is still a large improvement over -k, which
-# accepted any certificate at all.
+# The CN now comes from OpenVPN's own verified handshake (see openvpn_verified_cn),
+# not from the unauthenticated probe, and the probe is used only to confirm the PF
+# endpoint agrees. Reading the peer's own certificate for its name was the weak part
+# of the earlier fix: it proved "a host holding a PIA-signed certificate" rather than
+# "the server we authenticated to".
+# The common name OpenVPN itself authenticated during the handshake. The profile
+# is tls-client with remote-cert-tls server and PIA's CA, so by the time this line
+# is written the certificate has been validated against that CA - unlike a CN read
+# from an unauthenticated probe. OpenVPN logs it as:
+#   [montreal429] Peer Connection Initiated with [AF_INET]140.228.24.171:1198
+# (There are no VERIFY lines to parse: PIA's profile sets verb 1.)
+openvpn_verified_cn() {
+  grep -a 'Peer Connection Initiated' "$VPN_LOG_DIR/openvpn.log" 2>/dev/null |
+    tail -1 | sed -n 's/.*\[\([A-Za-z0-9_.-]*\)\] Peer Connection Initiated.*/\1/p'
+}
+
 pf_setup_openvpn_tls() {
   [ "$VPN_CLIENT" = "wireguard" ] && return 0
-  pf_cn=$(curl -sv -k --connect-timeout 5 --max-time 10 "https://$pf_ip:19999/" 2>&1 | grep -oE 'CN=[A-Za-z0-9_.-]+' | head -1 | cut -d= -f2)
+  pf_cn=$(openvpn_verified_cn)
+  if [ -n "$pf_cn" ]; then
+    # Cross-check against the certificate the port-forward endpoint presents. The
+    # authenticated name comes from the tunnel handshake; this confirms the PF
+    # endpoint is that same host rather than merely some host holding a PIA
+    # certificate. A mismatch means the two disagree about who we are talking to,
+    # so refuse port forwarding rather than guess.
+    probe_cn=$(curl -sv -k --connect-timeout 5 --max-time 10 "https://$pf_ip:19999/" 2>&1 | grep -oE 'CN=[A-Za-z0-9_.-]+' | head -1 | cut -d= -f2)
+    if [ -n "$probe_cn" ] && [ "$probe_cn" != "$pf_cn" ]; then
+      printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Port-forward endpoint identifies as '$probe_cn' but the tunnel authenticated '$pf_cn' - skipping port forwarding\n"
+      return 1
+    fi
+  else
+    # No authenticated name available (log rotated, or format changed). Fall back
+    # to the presented certificate, which is still verified against PIA's CA via
+    # --cacert below; only the hostname binding is weaker.
+    pf_cn=$(curl -sv -k --connect-timeout 5 --max-time 10 "https://$pf_ip:19999/" 2>&1 | grep -oE 'CN=[A-Za-z0-9_.-]+' | head -1 | cut -d= -f2)
+  fi
   if [ -n "$pf_cn" ]; then
     PF_GATEWAY="$pf_cn"
     PF_CONNECT="--connect-to $pf_cn::$pf_ip:"
@@ -1192,11 +1222,23 @@ tunnel_alive() {
     age=$((now - hs))
     [ "$age" -lt 150 ]
   else
-    # OpenVPN has no equivalent built-in freshness signal without a management
-    # socket. Fall back to confirming the process and interface are present -
-    # weaker than a true traffic check, but does not risk false positives on a
-    # healthy tunnel the way an external, region-specific probe can.
-    pgrep -x openvpn > /dev/null && ifconfig 2>/dev/null | grep -q "$VPN_DEVICE"
+    # OpenVPN has no handshake equivalent, but --status makes it rewrite a local
+    # status file on a fixed interval, so a stale file means the process is wedged
+    # rather than merely present. Still weaker than WireGuard's handshake age (it
+    # proves OpenVPN is running, not that the tunnel passes traffic), but strictly
+    # better than pgrep alone, and it is a LOCAL read - no network call, so it
+    # cannot false-positive on non-PF regions the way an external probe did.
+    pgrep -x openvpn > /dev/null || return 1
+    ifconfig 2>/dev/null | grep -q "$VPN_DEVICE" || return 1
+    if [ -f "$OVPN_STATUS" ]; then
+      st_age=$(( $(date +%s) - $(stat -c %Y "$OVPN_STATUS" 2>/dev/null || echo 0) ))
+      # Written every 10s; allow generous slack before calling it wedged.
+      [ "$st_age" -lt 120 ]
+    else
+      # No status file (older openvpn, or it never started) - fall back to the
+      # process-and-interface check rather than reporting a false death.
+      true
+    fi
   fi
 }
 
@@ -1320,7 +1362,7 @@ reconnect_vpn() {
       sleep 1
       wait_i=$((wait_i + 1))
     done
-    ( cd "$TARGET_PATH" && openvpn --config config.ovpn --daemon --log "$VPN_LOG_DIR/openvpn.log" )
+    ( cd "$TARGET_PATH" && openvpn --config config.ovpn --daemon --log "$VPN_LOG_DIR/openvpn.log" --status "$OVPN_STATUS" 10 )
     wait_i=0
     while ! ifconfig 2>/dev/null | grep -q "$VPN_DEVICE" && [ $wait_i -lt 20 ]; do
       sleep 1
@@ -1356,28 +1398,44 @@ reconnect_vpn() {
     fi
     binding=$(curl --connect-timeout 8 --max-time 15 -sG $PF_CONNECT $PF_CERT --data-urlencode "payload=$payload" --data-urlencode "signature=$signature" https://$PF_GATEWAY:19999/bindPort)
     if [ "$(echo "$binding" | jq -r '.status')" != "OK" ] && [ -n "$piaToken" ]; then
-      # A signature is issued by a specific gateway; after a failover the new one
-      # can refuse it. Ask the current gateway for a fresh one and retry once.
-      # This runs THROUGH the tunnel (verified up above), so the kill switch is
-      # untouched: no firewall change, and the gateway is already in VPNIPS.
+      # NOT for failover: measured that a signature issued by server A is accepted
+      # by server B once we are connected through B ("port scheduled for add"), so
+      # re-pinning alone covers a failover. The earlier "Unauthorized client" was
+      # about the request not arriving through the tunnel to that server, not about
+      # which server signed it.
+      #
+      # This path is therefore only for a genuinely invalid signature - PIA expires
+      # them after roughly two months. It is deliberately last-resort, because a
+      # fresh signature comes with a DIFFERENT port (measured: 45867 -> 52643,
+      # "replacing old data for this token"), which costs the user their forwarded
+      # port. Runs through the established tunnel; no firewall change.
       pia_sig=$(curl --connect-timeout 8 --max-time 15 --get -s $PF_CONNECT $PF_CERT --data-urlencode "token=$piaToken" "https://$PF_GATEWAY:19999/getSignature")
       if [ "$(echo "$pia_sig" | jq -r '.status' 2>/dev/null)" = "OK" ]; then
         signature=$(echo "$pia_sig" | jq -r '.signature')
         payload=$(echo "$pia_sig" | jq -r '.payload')
         new_port=$(echo "$payload" | base64 -d | jq -r '.port' 2>/dev/null)
         if [ -n "$new_port" ] && [ "$new_port" != "null" ] && [ "$new_port" != "$PF_PORT" ]; then
-          printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] PIA issued a new forwarded port after failover: $new_port (was $PF_PORT)\n"
-          printf "          The firewall now allows $new_port, but the RUNNING qBittorrent keeps listening on $PF_PORT,\n"
-          printf "          so incoming connections stay closed until the container is restarted.\n"
-          iptables -D INPUT -i $VPN_DEVICE -p tcp --dport $PF_PORT -j ACCEPT 2>/dev/null
-          iptables -D INPUT -i $VPN_DEVICE -p udp --dport $PF_PORT -j ACCEPT 2>/dev/null
-          PF_PORT="$new_port"
-          iptables -A INPUT -i $VPN_DEVICE -p tcp --dport $PF_PORT -j ACCEPT
-          iptables -A INPUT -i $VPN_DEVICE -p udp --dport $PF_PORT -j ACCEPT
-          # Deliberately NOT written to qBittorrent.conf: qBittorrent keeps its
-          # preferences in memory and rewrites that file when it saves, so the edit
-          # is reverted (measured: 59999 written, 42940 on disk after the save).
-          # The next start requests a fresh port and rewrites it regardless.
+          # A changed port cannot be applied to a running qBittorrent: it keeps its
+          # preferences in memory and rewrites qBittorrent.conf when it saves, so an
+          # edit here is reverted (measured: wrote 59999, read back 42940). Leaving
+          # it would mean the firewall allows the new port, the process listens on
+          # the old one, and PIA forwards neither to anything - inbound silently
+          # dead, surfaced only by a log line.
+          #
+          # So restart instead, exactly as the token-expiry escalation does: save
+          # resume data, exit, and let the restart policy bring us back into a clean
+          # startup that requests a port and writes a consistent config. Leak-safe:
+          # no firewall change here, and startup rebuilds the kill switch before
+          # qBittorrent launches.
+          printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] PIA issued a new forwarded port ($new_port, was $PF_PORT). The running\n"
+          printf "          qBittorrent cannot be moved to it in place, so the container will restart to pick it up.\n"
+          printf "          If it does not come back, set a restart policy: docker update --restart unless-stopped <name>\n"
+          qbt_pid=$(pgrep -x qbittorrent-nox)
+          if [ -n "$qbt_pid" ]; then
+            kill -TERM "$qbt_pid" 2>/dev/null
+            while pgrep -x qbittorrent-nox > /dev/null; do sleep 1; done
+          fi
+          exit 5
         fi
         binding=$(curl --connect-timeout 8 --max-time 15 -sG $PF_CONNECT $PF_CERT --data-urlencode "payload=$payload" --data-urlencode "signature=$signature" https://$PF_GATEWAY:19999/bindPort)
       fi
