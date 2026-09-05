@@ -681,11 +681,19 @@ elif [ ! -f /proc/net/if_inet6 ]; then
 else
   sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1
   sysctl -w net.ipv6.conf.default.disable_ipv6=1 >/dev/null 2>&1
-  if [ "$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)" = "1" ]; then
+  # BOTH keys must be checked. "default" is the template new interfaces inherit,
+  # and this runs before the tunnel exists - so verifying only "all" would let the
+  # VPN interface come up IPv6-enabled while the log reported success.
+  v6_all=$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null)
+  v6_def=$(sysctl -n net.ipv6.conf.default.disable_ipv6 2>/dev/null)
+  if [ "$v6_all" = "1" ] && [ "$v6_def" = "1" ]; then
     printf "ip6tables unavailable - IPv6 disabled via sysctl instead\n"
   else
     printf "FAILED\n"
-    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] Cannot block IPv6: ip6tables is unavailable and sysctl could not disable it, but this host has an IPv6 stack. Refusing to start rather than risk an IPv6 leak.\n"
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] Cannot block IPv6: ip6tables is unavailable, and sysctl cannot disable it because Docker mounts /proc/sys read-only. Refusing to start rather than risk an IPv6 leak.\n"
+    printf "          Fix: set these when CREATING the container (Docker applies them at creation, before /proc/sys is locked):\n"
+    printf "            --sysctl net.ipv6.conf.all.disable_ipv6=1 --sysctl net.ipv6.conf.default.disable_ipv6=1\n"
+    printf "          docker-compose users: use the sysctls: block. See Known Issues in the README.\n"
     exit 1
   fi
 fi
@@ -960,15 +968,46 @@ else
   # does. The CN is only used for hostname matching: the trust anchor is still the
   # bundled CA, so a certificate not signed by PIA is still rejected.
   pf_ip=$(route -n | grep UG | grep tun0 | tr -s ' ' | cut -d' ' -f2 | head -1)
+  PF_GATEWAY="$pf_ip"
+  # The certificate probe is only needed for port forwarding, so it is deferred to
+  # pf_setup_openvpn_tls below rather than run on every start. tunnel_alive() does
+  # NOT need it: its OpenVPN branch only checks the process and interface.
+fi
+
+# Resolve TLS parameters for the OpenVPN port-forward endpoint. Called only when
+# port forwarding is actually in use.
+#
+# The endpoint is the tunnel gateway, whose certificate is issued by PIA's CA but
+# carries the server hostname, so addressing it by IP fails hostname validation -
+# which is why this once used -k and verified nothing. We read the CN the gateway
+# presents and then verify properly against the bundled CA.
+#
+# LIMITATION, deliberately accepted: because the CN comes from the peer rather than
+# from an authenticated source, this proves "a host holding a PIA-signed certificate"
+# rather than "this specific server". The WireGuard path is stronger, as its CN comes
+# from data.json. Pinning here would require parsing the chosen remote out of the
+# OpenVPN log and matching it against data.json; the peer IP is not always present in
+# that list, so it is not a drop-in. This is still a large improvement over -k, which
+# accepted any certificate at all.
+pf_setup_openvpn_tls() {
+  [ "$VPN_CLIENT" = "wireguard" ] && return 0
   pf_cn=$(curl -sv -k --connect-timeout 5 --max-time 10 "https://$pf_ip:19999/" 2>&1 | grep -oE 'CN=[A-Za-z0-9_.-]+' | head -1 | cut -d= -f2)
   if [ -n "$pf_cn" ]; then
     PF_GATEWAY="$pf_cn"
     PF_CONNECT="--connect-to $pf_cn::$pf_ip:"
     PF_CERT="--cacert /app/ca.rsa.4096.crt"
-  else
-    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Could not read the port-forward gateway certificate - falling back to unverified TLS for port forwarding\n"
-    PF_GATEWAY="$pf_ip"
-    PF_CERT="-k"
+    return 0
+  fi
+  # Refuse to fall back to unverified TLS: skipping port forwarding is better than
+  # binding a port over a connection we cannot authenticate. Same stance as the
+  # IPv6 handling above.
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Could not read the port-forward gateway certificate - skipping port forwarding rather than using unverified TLS\n"
+  return 1
+}
+
+if is_enabled "$PORT_FORWARDING"; then
+  if ! pf_setup_openvpn_tls; then
+    PORT_FORWARDING=false
   fi
 fi
 
@@ -1084,29 +1123,35 @@ fi
 # Run post-vpn-connect hook script
 ############################################
 
-# Run the user hook. SECURITY: this used to be "." (sourced), which executed the
-# script INSIDE this root shell. /config is chowned to qbtUser earlier, so anything
-# able to write that volume - including a compromised qBittorrent - could drop a
-# file here and get root in the container on the next start. Now it runs as a
-# separate process, and only as root when the file is root-owned and not writable by
-# anyone else; otherwise it is dropped to qbtUser.
+# Run the user hook.
+#
+# SECURITY: this was originally sourced ("."), executing inside this root shell, so
+# anything able to write /config - which is chowned to qbtUser, including a
+# compromised qBittorrent - obtained root on the next start. A later attempt
+# inspected the file owner/mode first, but that is inherently racy: stat and sh
+# resolve the path independently and qbtUser owns the directory, so the entry can be
+# swapped (or pointed at a symlink) between the check and the exec. A check-then-run
+# on a user-writable path cannot be made safe, so the privilege decision is removed
+# entirely: the /config hook ALWAYS runs as qbtUser.
+#
+# A hook that genuinely needs root must live at /app/post-vpn-connect.sh - a path the
+# container user cannot write (mount it read-only, or bake it into a derived image).
+#
+# Environment: a subprocess inherits only EXPORTED variables, and doas scrubs the
+# environment outright, so the values hooks actually use are passed explicitly.
+# Sourcing used to expose all of them; this keeps documented hooks working.
+hook_env="PF_PORT=$PF_PORT WEBUI_PORT=$WEBUI_PORT VPN_DEVICE=$VPN_DEVICE PIA_REGION=$PIA_REGION VPN_CLIENT=$VPN_CLIENT PUID=$PUID PGID=$PGID"
+
+if [ -f /app/post-vpn-connect.sh ]; then
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Running /app/post-vpn-connect.sh (as root)\n"
+  # shellcheck disable=SC2086
+  env $hook_env sh /app/post-vpn-connect.sh
+fi
+
 if [ -f /config/post-vpn-connect.sh ]; then
-  hook_uid=$(stat -c %u /config/post-vpn-connect.sh 2>/dev/null)
-  hook_perm=$(stat -c %a /config/post-vpn-connect.sh 2>/dev/null)
-  # Check the GROUP and OTHER digits separately - looking at only the last digit
-  # would miss group-writable modes like 775 or 764.
-  hook_grp=$(printf "%s" "$hook_perm" | tail -c 2 | cut -c1)
-  hook_oth=$(printf "%s" "$hook_perm" | tail -c 1)
-  hook_group_or_other_writable=no
-  case "$hook_grp" in 2|3|6|7) hook_group_or_other_writable=yes ;; esac
-  case "$hook_oth" in 2|3|6|7) hook_group_or_other_writable=yes ;; esac
-  if [ "$hook_uid" = "0" ] && [ "$hook_group_or_other_writable" = "no" ]; then
-    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Running post-vpn-connect.sh (as root)\n"
-    sh /config/post-vpn-connect.sh
-  else
-    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Running post-vpn-connect.sh (as qbtUser - not root-owned)\n"
-    doas -u qbtUser sh /config/post-vpn-connect.sh
-  fi
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Running post-vpn-connect.sh (as qbtUser)\n"
+  # shellcheck disable=SC2086
+  doas -u qbtUser env $hook_env sh /config/post-vpn-connect.sh
 fi
 # Checks the VPN tunnel is actually alive, independent of PORT_FORWARDING -
 # this is what catches a tunnel that stays "up" (interface present) but has
@@ -1123,7 +1168,9 @@ tunnel_alive() {
   if [ "$VPN_CLIENT" = "wireguard" ]; then
     # WireGuard exposes handshake freshness locally, no network call needed,
     # and it is available regardless of region/PF support. PersistentKeepalive
-    # is 25s, so a healthy tunnel's handshake should never be much older
+    # is 25s, so a healthy tunnel's handshake should never be much older.
+    # NOTE: healthcheck.sh implements the same check with a larger 180s threshold
+    # (it gets no retry). Keep the two in step if either changes.
     # than that; allow generous slack for jitter.
     hs=$(wg show pia latest-handshakes 2>/dev/null | awk 'NR==1{print $2}')
     [ -z "$hs" ] && return 1
