@@ -79,7 +79,7 @@ The title-bar version comes from an `X-Docker-Version` response header this imag
 | Alpine Linux | 3.24 |
 | qBittorrent | 5.2.3 |
 | libtorrent | 2.0.14 |
-| Boost | 1.91.0 |
+| Boost | 1.92.0 |
 | OpenVPN | 2.7.5 |
 | WireGuard | 1.0.20260223 |
 | IPTables | 1.8.13 |
@@ -424,7 +424,15 @@ printf " My forwarding port is $PF_PORT\n"
 | `8.8.8.8`, `8.8.4.4` | Google |
 | `84.200.69.80`, `84.200.70.40` | DNS.WATCH |
 
-Once connected to PIA you can also use PIA's private DNS: `10.0.0.242`
+Once connected to PIA you can also use PIA's own private DNS. These are reachable
+**only through the tunnel**, so they cannot be used before the VPN is up:
+
+| Server | Provides |
+|--------|----------|
+| `10.0.0.242` | DNS |
+| `10.0.0.243` | DNS + Streaming |
+| `10.0.0.244` | DNS + MACE (blocks ads and trackers) |
+| `10.0.0.241` | DNS + Streaming + MACE |
 
 ---
 
@@ -478,7 +486,7 @@ containers can be updated in place with `docker update --restart unless-stopped 
 | Code | Meaning | Needs a restart policy |
 |------|---------|------------------------|
 | `0` | Normal shutdown | - |
-| `1` | Invalid configuration (bad `WEBUI_PORT`, unresolvable `PIA_REGION`, `VPN_LOG_DIR` under `/config`, IPv6 cannot be blocked) | No - fix the setting |
+| `1` | Invalid configuration (bad `WEBUI_PORT`, unresolvable `PIA_REGION`, IPv6 cannot be blocked) | No - fix the setting |
 | `3` | PIA credentials missing or rejected while fetching a token | No - fix `/auth.conf` |
 | `5` | Deliberate restart to recover something that cannot be fixed in place: an expired PIA token (after 6 failed in-place reconnects), or a changed forwarded port that a running qBittorrent cannot be moved to | **Yes** |
 | `6` | OpenVPN reported a fatal error in its log | No |

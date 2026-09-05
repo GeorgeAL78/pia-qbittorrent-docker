@@ -851,22 +851,27 @@ esac
 if [ -z "$log_unsafe" ]; then
   log_owner=$(stat -c '%u' "$log_real" 2>/dev/null)
   log_mode=$(stat -c '%a' "$log_real" 2>/dev/null)
-  # Pad to 3 digits so group/other are read from the right positions, and test them
-  # separately - a check that looks only at the last digit passes 775 and 764.
-  log_mode=$(printf '%03d' "${log_mode:-0}" 2>/dev/null || printf '000')
-  log_grp=$(printf '%s' "$log_mode" | cut -c2)
-  log_oth=$(printf '%s' "$log_mode" | cut -c3)
-  case "$log_owner:$log_grp:$log_oth" in
-    0:[01458]:[01458]) ;;
-    *) log_unsafe="it is writable by a non-root user (owner uid $log_owner, mode $log_mode)" ;;
-  esac
+  # Mask the group and other write bits directly rather than slicing digits. An
+  # earlier version padded to 3 with printf '%03d' and read positions 2 and 3, which
+  # breaks on a 4-digit mode: a sticky directory reports 1755, and slicing gives 7
+  # and 5 - flagging a perfectly safe directory as unsafe. 0$mode makes the shell
+  # parse it as octal whatever its length.
+  if [ "$log_owner" != "0" ] || [ $(( 0${log_mode:-0} & 022 )) -ne 0 ]; then
+    log_unsafe="it is writable by a non-root user (owner uid $log_owner, mode $log_mode)"
+  fi
 fi
-if [ -n "$log_unsafe" ] && [ "$log_real" != "/logs" ]; then
+if [ -n "$log_unsafe" ]; then
   printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] VPN_LOG_DIR '$VPN_LOG_DIR' is not safe for the VPN log: $log_unsafe.\n"
   printf "          That log decides the port-forward hostname and can abort startup, so it must be\n"
   printf "          root-only. Falling back to /logs.\n"
-  VPN_LOG_DIR=/logs
-  mkdir -p "$VPN_LOG_DIR"
+  if [ "$log_real" = "/logs" ]; then
+    # Nowhere left to fall back to - /logs IS the fallback. Warn and continue; the
+    # container is still usable, but the log is not a trustworthy control input.
+    printf "          /logs is itself unsafe, so there is nowhere to fall back to. Fix the mount.\n"
+  else
+    VPN_LOG_DIR=/logs
+    mkdir -p "$VPN_LOG_DIR"
+  fi
 fi
 cd "$TARGET_PATH"
 
@@ -1100,6 +1105,82 @@ pf_setup_openvpn_tls() {
   return 1
 }
 
+# Bind (or refresh) the forwarded port. Returns:
+#   0 bound
+#   1 transient failure - timeout, refused, 5xx, unparseable. Retry later.
+#   2 signature rejected ("bad signature") - deterministic; only a fresh
+#     signature can fix it, and that costs a new port number.
+#   3 wrong gateway ("Unauthorized client") - the request reached a PIA server
+#     that did not issue our signature, i.e. the pin is stale. Re-pin, do NOT
+#     re-sign: measured that a signature from server A is accepted by server B
+#     once we are actually connected through B.
+# Cases 2 and 3 are deterministic, so they return immediately rather than
+# burning retries. Only case 1 retries.
+pf_bind() {
+  local pb_try
+  pb_try=0
+  while [ $pb_try -lt 3 ]; do
+    pb_try=$((pb_try + 1))
+    binding=$(curl --connect-timeout 8 --max-time 15 -sG $PF_CONNECT $PF_CERT \
+              --data-urlencode "payload=$payload" \
+              --data-urlencode "signature=$signature" \
+              "https://$PF_GATEWAY:19999/bindPort")
+    [ "$(echo "$binding" | jq -r '.status' 2>/dev/null)" = "OK" ] && return 0
+    case "$(echo "$binding" | jq -r '.message' 2>/dev/null)" in
+      *"bad signature"*)       return 2 ;;
+      *"Unauthorized client"*) return 3 ;;
+    esac
+    [ $pb_try -lt 3 ] && sleep 4
+  done
+  return 1
+}
+
+# Replace an expired signature and re-bind. Called only when pf_bind() reported a
+# measured "bad signature" - PIA expires them after roughly two months.
+#
+# Deliberately last-resort: a fresh signature always comes back with a DIFFERENT
+# port (measured: 45867 -> 52643, "replacing old data for this token"), which costs
+# the user their forwarded port. It is NOT the failover remedy - a signature issued
+# by server A is accepted by server B once we are connected through B, so a stale
+# pin is fixed by pf_repin(), not by re-signing.
+#
+# Runs through the established tunnel; no firewall or routing change.
+# Returns pf_bind()'s classification, or 1 if no fresh signature could be obtained.
+pf_resign_and_bind() {
+  [ -z "$piaToken" ] && return 1
+  # Single attempt on purpose. The startup acquisition retries 6x because the PF
+  # API is settling right after connect; this path is last-resort and a fresh
+  # signature costs the user their port, so it must not loop.
+  pia_sig=$(curl --connect-timeout 8 --max-time 15 --get -s $PF_CONNECT $PF_CERT --data-urlencode "token=$piaToken" "https://$PF_GATEWAY:19999/getSignature")
+  [ "$(echo "$pia_sig" | jq -r '.status' 2>/dev/null)" = "OK" ] || return 1
+  signature=$(echo "$pia_sig" | jq -r '.signature')
+  payload=$(echo "$pia_sig" | jq -r '.payload')
+  new_port=$(echo "$payload" | base64 -d | jq -r '.port' 2>/dev/null)
+  if [ -n "$new_port" ] && [ "$new_port" != "null" ] && [ "$new_port" != "$PF_PORT" ]; then
+    # A changed port cannot be applied to a running qBittorrent: it keeps its
+    # preferences in memory and rewrites qBittorrent.conf when it saves, so an edit
+    # here is reverted (measured: wrote 59999, read back 42940). Leaving it would
+    # mean the firewall allows the new port, the process listens on the old one,
+    # and PIA forwards neither to anything - inbound silently dead.
+    #
+    # So restart, exactly as the token-expiry escalation does: save resume data,
+    # exit, and let the restart policy bring us back into a clean startup that
+    # requests a port and writes a consistent config. Leak-safe: no firewall change
+    # here, and startup rebuilds the kill switch before qBittorrent launches.
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] PIA issued a new forwarded port ($new_port, was $PF_PORT). The running\n"
+    printf "          qBittorrent cannot be moved to it in place, so the container will restart to pick it up.\n"
+    printf "          If it does not come back, set a restart policy: docker update --restart unless-stopped <name>\n"
+    qbt_pid=$(pgrep -x qbittorrent-nox)
+    if [ -n "$qbt_pid" ]; then
+      kill -TERM "$qbt_pid" 2>/dev/null
+      while pgrep -x qbittorrent-nox > /dev/null; do sleep 1; done
+    fi
+    exit 5
+  fi
+  pf_bind
+}
+
+
 if is_enabled "$PORT_FORWARDING"; then
   if ! pf_setup_openvpn_tls; then
     PORT_FORWARDING=false
@@ -1144,7 +1225,12 @@ if is_enabled "$PORT_FORWARDING"; then
     printf "          See https://github.com/GeorgeAL78/pia-qbittorrent-docker#pia-regions to pick a PF-capable region\n"
     pf_status="UNSUPPORTED"
   else
-    # Get the signature and payload. Right after the tunnel comes up the PF API can
+    # Get the signature and payload. Deliberately NOT shared with
+    # pf_resign_and_bind()'s getSignature call: this one retries 6x because the PF
+    # API is still settling just after connect, whereas that one is last-resort and
+    # must not loop. Same URL and token, different policy.
+    #
+    # Right after the tunnel comes up the PF API can
     # need a few seconds before it will issue a signature (route settling on our side,
     # peer registration on PIA's side), so retry instead of giving up on the first try.
     while [ $pf_try -lt 6 ]; do
@@ -1360,78 +1446,6 @@ WGEOF
   return 0
 }
 
-# Bind (or refresh) the forwarded port. Returns:
-#   0 bound
-#   1 transient failure - timeout, refused, 5xx, unparseable. Retry later.
-#   2 signature rejected ("bad signature") - deterministic; only a fresh
-#     signature can fix it, and that costs a new port number.
-#   3 wrong gateway ("Unauthorized client") - the request reached a PIA server
-#     that did not issue our signature, i.e. the pin is stale. Re-pin, do NOT
-#     re-sign: measured that a signature from server A is accepted by server B
-#     once we are actually connected through B.
-# Cases 2 and 3 are deterministic, so they return immediately rather than
-# burning retries. Only case 1 retries.
-pf_bind() {
-  local pb_try
-  pb_try=0
-  while [ $pb_try -lt 3 ]; do
-    pb_try=$((pb_try + 1))
-    binding=$(curl --connect-timeout 8 --max-time 15 -sG $PF_CONNECT $PF_CERT \
-              --data-urlencode "payload=$payload" \
-              --data-urlencode "signature=$signature" \
-              "https://$PF_GATEWAY:19999/bindPort")
-    [ "$(echo "$binding" | jq -r '.status' 2>/dev/null)" = "OK" ] && return 0
-    case "$(echo "$binding" | jq -r '.message' 2>/dev/null)" in
-      *"bad signature"*)       return 2 ;;
-      *"Unauthorized client"*) return 3 ;;
-    esac
-    [ $pb_try -lt 3 ] && sleep 4
-  done
-  return 1
-}
-
-# Replace an expired signature and re-bind. Called only when pf_bind() reported a
-# measured "bad signature" - PIA expires them after roughly two months.
-#
-# Deliberately last-resort: a fresh signature always comes back with a DIFFERENT
-# port (measured: 45867 -> 52643, "replacing old data for this token"), which costs
-# the user their forwarded port. It is NOT the failover remedy - a signature issued
-# by server A is accepted by server B once we are connected through B, so a stale
-# pin is fixed by pf_repin(), not by re-signing.
-#
-# Runs through the established tunnel; no firewall or routing change.
-# Returns pf_bind()'s classification, or 1 if no fresh signature could be obtained.
-pf_resign_and_bind() {
-  [ -z "$piaToken" ] && return 1
-  pia_sig=$(curl --connect-timeout 8 --max-time 15 --get -s $PF_CONNECT $PF_CERT --data-urlencode "token=$piaToken" "https://$PF_GATEWAY:19999/getSignature")
-  [ "$(echo "$pia_sig" | jq -r '.status' 2>/dev/null)" = "OK" ] || return 1
-  signature=$(echo "$pia_sig" | jq -r '.signature')
-  payload=$(echo "$pia_sig" | jq -r '.payload')
-  new_port=$(echo "$payload" | base64 -d | jq -r '.port' 2>/dev/null)
-  if [ -n "$new_port" ] && [ "$new_port" != "null" ] && [ "$new_port" != "$PF_PORT" ]; then
-    # A changed port cannot be applied to a running qBittorrent: it keeps its
-    # preferences in memory and rewrites qBittorrent.conf when it saves, so an edit
-    # here is reverted (measured: wrote 59999, read back 42940). Leaving it would
-    # mean the firewall allows the new port, the process listens on the old one,
-    # and PIA forwards neither to anything - inbound silently dead.
-    #
-    # So restart, exactly as the token-expiry escalation does: save resume data,
-    # exit, and let the restart policy bring us back into a clean startup that
-    # requests a port and writes a consistent config. Leak-safe: no firewall change
-    # here, and startup rebuilds the kill switch before qBittorrent launches.
-    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] PIA issued a new forwarded port ($new_port, was $PF_PORT). The running\n"
-    printf "          qBittorrent cannot be moved to it in place, so the container will restart to pick it up.\n"
-    printf "          If it does not come back, set a restart policy: docker update --restart unless-stopped <name>\n"
-    qbt_pid=$(pgrep -x qbittorrent-nox)
-    if [ -n "$qbt_pid" ]; then
-      kill -TERM "$qbt_pid" 2>/dev/null
-      while pgrep -x qbittorrent-nox > /dev/null; do sleep 1; done
-    fi
-    exit 5
-  fi
-  pf_bind
-}
-
 # Re-pin the port-forward gateway after a reconnect. Both VPN clients can come
 # back on a DIFFERENT server than they left on - WireGuard because wg_refresh_config
 # fails over through the region's server list, OpenVPN because the profile carries
@@ -1527,7 +1541,14 @@ reconnect_vpn() {
       printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Reconnected - port forwarding restored (port $PF_PORT)\n"
       return 0
     fi
-    return 1
+    # The tunnel is up - tunnel_alive() confirmed it above, and pf_repin() succeeded.
+    # Only the port-forward API is unhappy, so this is a DEGRADED reconnect, not a
+    # failed one. Returning 1 here would walk vpn_fail_count toward the 6x exit 5
+    # restart on a healthy tunnel, which is exactly what the pf_repin branch above
+    # refuses to do; the same reasoning applies three lines later. The refresh loop
+    # retries in ten minutes and now distinguishes the classes.
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Reconnected and the tunnel is up, but the port-forward bind failed (class $pf_bind_rc) - retrying next cycle\n"
+    return 0
   fi
 
   # No port forwarding in use - the tunnel being back up (verified above) is
@@ -1627,9 +1648,18 @@ while : ; do
           fi
           ;;
         3)
+          # A stale pin is a local problem: pf_repin() reads the route table and the
+          # authenticated handshake line, no tunnel work involved. And a signature
+          # issued by server A is accepted by server B once we are actually on B
+          # (measured), so re-pinning alone can fix this. Only fall back to a full
+          # reconnect if the re-pin or the retry still fails.
           printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Port-forward gateway no longer recognises us - re-pinning\n"
           pf_soft_fail=0
-          need_reconnect=true
+          if pf_repin && pf_bind; then
+            printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Re-pinned to the current gateway - port forwarding restored\n"
+          else
+            need_reconnect=true
+          fi
           ;;
       esac
     else
@@ -1645,6 +1675,9 @@ while : ; do
     if [ "$need_reconnect" = "true" ]; then
       if reconnect_vpn; then
         vpn_fail_count=0
+        # Also clear the transient-refresh counter: leaving it at >=2 means the very
+        # next blip tears the freshly-rebuilt tunnel straight back down.
+        pf_soft_fail=0
       else
         vpn_fail_count=$((vpn_fail_count + 1))
         printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Reconnect attempt $vpn_fail_count did not restore the connection\n"
