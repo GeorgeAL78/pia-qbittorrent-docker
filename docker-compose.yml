@@ -4,15 +4,29 @@ services:
         container_name: pia-qbittorrent
         cap_add:
             - NET_ADMIN
+        # Reap zombie processes (the container runs the VPN client alongside
+        # qBittorrent). The README's docker run example uses --init for the same reason.
+        init: true
+        # On stop, the container saves qBittorrent's resume data before exiting.
+        # Docker's default grace period is only 10s, which can SIGKILL that mid-save
+        # and force every torrent to re-check on the next start.
+        stop_grace_period: 30s
         environment:
             - PIA_REGION=netherlands
             - PIA_USERNAME=
             - PIA_PASSWORD=
-            - PORT_FORWARDING=true
             - VPN_CLIENT=wireguard
+            - PORT_FORWARDING=true
             - WEBUI_PORT=8888
+            # Match your host user so downloaded files are owned correctly.
+            # UID=99 / GID=100 are the right values for Unraid.
+            - UID=1000
+            - GID=1000
+            - UMASK=022
         volumes:
-#            - ./auth.conf:/auth.conf
+            # Preferred: keep credentials in a file instead of environment variables,
+            # then leave PIA_USERNAME/PIA_PASSWORD unset above.
+            #- ./auth.conf:/auth.conf:ro
             - ./config:/config
             - ./downloads:/downloads
         ports:
