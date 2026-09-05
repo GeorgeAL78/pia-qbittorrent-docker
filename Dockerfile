@@ -67,7 +67,7 @@ RUN apk add --no-cache -t .build-deps autoconf automake build-base cmake git lib
 	cd / && \
 	rm -rf /tmp/* /var/tmp/* /var/cache/apk/* /var/cache/distfiles/* /usr/include/* 
 
-COPY ./entrypoint.sh ./healthcheck.sh ./qBittorrent.conf ./data.json ./ca.rsa.4096.crt /app/
+COPY ./entrypoint.sh ./healthcheck.sh ./vpn-thresholds.sh ./qBittorrent.conf ./data.json ./ca.rsa.4096.crt /app/
 
 ARG VERSION=unknown
 ENV CONTAINER_VERSION=$VERSION
@@ -84,7 +84,7 @@ RUN adduser \
         qbtUser && \
     echo "permit nopass :root" >> "/etc/doas.d/doas.conf"
 
-RUN chmod 500 /app/entrypoint.sh /app/healthcheck.sh
+RUN chmod 500 /app/entrypoint.sh /app/healthcheck.sh && chmod 400 /app/vpn-thresholds.sh
 
 # Start point for docker
 ENTRYPOINT ["/app/entrypoint.sh"]

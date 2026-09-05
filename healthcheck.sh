@@ -1,5 +1,9 @@
 #!/bin/sh
 
+# Thresholds are shared with entrypoint.sh so the two cannot drift apart.
+# shellcheck source=vpn-thresholds.sh
+. /app/vpn-thresholds.sh
+
 # Check the VPN interface exists
 if ! ifconfig | grep -qE 'tun[0-9]|tap[0-9]|pia'; then
     echo "No VPN interface found" >&2
@@ -10,13 +14,13 @@ fi
 # up even after the peer stops responding, which is exactly the failure where
 # torrents hang with no error. For WireGuard, check handshake freshness: a local
 # read, no network traffic generated. PersistentKeepalive is 25s, so a healthy
-# tunnel's handshake is never old; 180s allows for rekey jitter and for an
-# in-progress reconnect that is about to succeed.
+# tunnel's handshake is never old; the threshold in /app/vpn-thresholds.sh allows
+# for rekey jitter and for an in-progress reconnect that is about to succeed.
 if ifconfig | grep -q 'pia'; then
     HS=$(wg show pia latest-handshakes 2>/dev/null | awk 'NR==1{print $2}')
     if [ -n "$HS" ] && [ "$HS" -gt 0 ] 2>/dev/null; then
         AGE=$(( $(date +%s) - HS ))
-        if [ "$AGE" -ge 180 ]; then
+        if [ "$AGE" -ge "$WG_STALE_HEALTH" ]; then
             echo "VPN tunnel is stale - last WireGuard handshake ${AGE}s ago" >&2
             exit 1
         fi
@@ -29,9 +33,8 @@ fi
 # For OpenVPN, the interface and the process both persist when the client wedges,
 # so neither proves the tunnel is alive. openvpn is started with --status, which
 # rewrites a local file every 10s; a stale file means wedged. Local read, no network.
-# Threshold matches the WireGuard branch above (180s) because this check gets the
-# same retry budget from Docker; entrypoint.sh uses 150s in its monitoring loop,
-# which retries on a different schedule. Keep all three in step if any changes.
+# Threshold comes from /app/vpn-thresholds.sh, which also carries entrypoint.sh's
+# tighter loop values and the reason they differ.
 if ifconfig | grep -qE 'tun[0-9]|tap[0-9]'; then
     if ! pgrep -x openvpn > /dev/null 2>&1; then
         echo "VPN interface exists but the openvpn process is gone" >&2
@@ -39,7 +42,7 @@ if ifconfig | grep -qE 'tun[0-9]|tap[0-9]'; then
     fi
     if [ -f /run/openvpn.status ]; then
         AGE=$(( $(date +%s) - $(stat -c %Y /run/openvpn.status 2>/dev/null || echo 0) ))
-        if [ "$AGE" -ge 180 ]; then
+        if [ "$AGE" -ge "$OVPN_STATUS_HEALTH" ]; then
             echo "openvpn is running but its status file is ${AGE}s stale - wedged" >&2
             exit 1
         fi

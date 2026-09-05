@@ -239,6 +239,10 @@ fi
 # tunnel_alive() uses its age to tell a wedged process from a healthy one.
 OVPN_STATUS=/run/openvpn.status
 
+# Tunnel-liveness thresholds, shared with healthcheck.sh so the two cannot drift.
+# shellcheck source=vpn-thresholds.sh
+. /app/vpn-thresholds.sh
+
 ############################################
 # SHOW PARAMETERS
 ############################################
@@ -816,21 +820,54 @@ done
 ############################################
 printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Connecting to VPN\n"
 
-# The OpenVPN log is a control input, not just output: the port-forward CN is read
-# from it, and startup aborts on "ERROR:"/"fatal error" lines found there. /config is
-# chowned to qbtUser below, so a log directory underneath it would let a compromised
-# qBittorrent inject a "Peer Connection Initiated" line that tail -1 prefers, or an
-# "ERROR:" line that blocks the next start. Default /logs is root-owned; refuse the
-# overrides that are not.
-case "$VPN_LOG_DIR" in
+mkdir -p "$VPN_LOG_DIR"
+# The OpenVPN log is a control input, not just output: the port-forward hostname is
+# read from it, and startup aborts on "ERROR:"/"fatal error" lines found there. So it
+# must not be writable by anything other than root - otherwise a compromised
+# qBittorrent could inject a "Peer Connection Initiated" line that tail -1 prefers,
+# or an "ERROR:" line that blocks the next start.
+#
+# TWO tests are needed, and the ownership one alone is not enough. /config is chowned
+# to qbtUser LATER in this script, so at this point /config/logs has just been created
+# root-owned and looks perfectly safe - it only becomes writable after the chown, by
+# which time openvpn is already writing there. So the path is resolved and checked
+# against /config as well. readlink -f normalises the aliases a prefix match would
+# miss: //config/logs, /config/./logs and a symlink pointing into /config all resolve
+# to the real path.
+#
+# The mode test then covers what the path test cannot see: a bind-mounted host
+# directory that is world-writable for reasons of its own.
+#
+# Falls back rather than refusing to start: VPN_LOG_DIR=/config/logs was valid in
+# earlier releases, and a patch release should not put an existing container into a
+# crash loop over it.
+log_unsafe=""
+log_real=$(readlink -f "$VPN_LOG_DIR" 2>/dev/null || printf '%s' "$VPN_LOG_DIR")
+case "$log_real" in
   /config|/config/*)
-    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] VPN_LOG_DIR cannot be under /config: that directory is owned by the\n"
-    printf "          container user, and the VPN log is used to decide the port-forward hostname and\n"
-    printf "          whether startup should abort. Use the default (/logs) or a path outside /config.\n"
-    exit 1
+    log_unsafe="it is under /config, which is handed to the container user later in startup"
     ;;
 esac
-mkdir -p "$VPN_LOG_DIR"
+if [ -z "$log_unsafe" ]; then
+  log_owner=$(stat -c '%u' "$log_real" 2>/dev/null)
+  log_mode=$(stat -c '%a' "$log_real" 2>/dev/null)
+  # Pad to 3 digits so group/other are read from the right positions, and test them
+  # separately - a check that looks only at the last digit passes 775 and 764.
+  log_mode=$(printf '%03d' "${log_mode:-0}" 2>/dev/null || printf '000')
+  log_grp=$(printf '%s' "$log_mode" | cut -c2)
+  log_oth=$(printf '%s' "$log_mode" | cut -c3)
+  case "$log_owner:$log_grp:$log_oth" in
+    0:[01458]:[01458]) ;;
+    *) log_unsafe="it is writable by a non-root user (owner uid $log_owner, mode $log_mode)" ;;
+  esac
+fi
+if [ -n "$log_unsafe" ] && [ "$log_real" != "/logs" ]; then
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] VPN_LOG_DIR '$VPN_LOG_DIR' is not safe for the VPN log: $log_unsafe.\n"
+  printf "          That log decides the port-forward hostname and can abort startup, so it must be\n"
+  printf "          root-only. Falling back to /logs.\n"
+  VPN_LOG_DIR=/logs
+  mkdir -p "$VPN_LOG_DIR"
+fi
 cd "$TARGET_PATH"
 
 if [ "$VPN_CLIENT" = "wireguard" ]; then
@@ -1023,6 +1060,9 @@ openvpn_verified_cn() {
 # An earlier version inlined the probe here to get atomicity and forked the logic.
 pf_setup_openvpn_tls() {
   [ "$VPN_CLIENT" = "wireguard" ] && return 0
+  # Locals: this is now called from two places (startup and pf_repin), and a stale
+  # value inherited by the second caller would be silent. busybox ash supports local.
+  local new_ip pf_cn probe_cn
   new_ip=$(route -n | grep UG | grep "$VPN_DEVICE" | tr -s ' ' | cut -d' ' -f2 | head -1)
   [ -z "$new_ip" ] && return 1
   pf_cn=$(openvpn_verified_cn)
@@ -1148,16 +1188,12 @@ if is_enabled "$PORT_FORWARDING"; then
     fi
 
     # Request port forwarding
-    binding=$(curl --connect-timeout 8 --max-time 15 -sG \
-              $PF_CONNECT \
-              $PF_CERT \
-              --data-urlencode "payload=$payload" \
-              --data-urlencode "signature=$signature" \
-              https://$PF_GATEWAY:19999/bindPort)
+    pf_bind
+    pf_bind_rc=$?
 
-    printf " * $(echo $binding | jq -r '.message')\n"
+    printf " * $(echo "$binding" | jq -r '.message' 2>/dev/null)\n"
 
-    if [ "$(echo "$binding" | jq -r '.status')" = "OK" ]; then
+    if [ $pf_bind_rc -eq 0 ]; then
       # Port bound - open it on the firewall and write it to qBittorrent
       printf " * Adding port to firewall on interface $VPN_DEVICE\n"
       iptables -A INPUT -i $VPN_DEVICE -p tcp --dport $PF_PORT -j ACCEPT
@@ -1229,18 +1265,15 @@ tunnel_alive() {
     # WireGuard exposes handshake freshness locally, no network call needed,
     # and it is available regardless of region/PF support. PersistentKeepalive
     # is 25s, so a healthy tunnel's handshake should never be much older than
-    # that; allow generous slack for jitter.
-    # NOTE: healthcheck.sh implements the same check with a larger threshold (180s
-    # vs 150s here). The values differ deliberately: this runs inside the 10-minute
-    # monitoring loop and a failure triggers a reconnect, whereas healthcheck.sh
-    # runs every minute and Docker retries it 3 times before marking the container
-    # unhealthy. Keep both in step if either changes.
+    # that; allow generous slack for jitter. Threshold lives in
+    # /app/vpn-thresholds.sh alongside healthcheck.sh's, which is deliberately
+    # looser - see that file for why.
     hs=$(wg show pia latest-handshakes 2>/dev/null | awk 'NR==1{print $2}')
     [ -z "$hs" ] && return 1
     [ "$hs" -gt 0 ] 2>/dev/null || return 1
     now=$(date +%s)
     age=$((now - hs))
-    [ "$age" -lt 150 ]
+    [ "$age" -lt "$WG_STALE_LOOP" ]
   else
     # OpenVPN has no handshake equivalent, but --status makes it rewrite a local
     # status file on a fixed interval, so a stale file means the process is wedged
@@ -1253,7 +1286,7 @@ tunnel_alive() {
     if [ -f "$OVPN_STATUS" ]; then
       st_age=$(( $(date +%s) - $(stat -c %Y "$OVPN_STATUS" 2>/dev/null || echo 0) ))
       # Written every 10s; allow generous slack before calling it wedged.
-      [ "$st_age" -lt 120 ]
+      [ "$st_age" -lt "$OVPN_STATUS_LOOP" ]
     else
       # No status file (older openvpn, or it never started) - fall back to the
       # process-and-interface check rather than reporting a false death.
@@ -1325,6 +1358,78 @@ Endpoint = ${WG_IP}:$(echo "$refresh_json" | jq -r '.server_port')
 PersistentKeepalive = 25
 WGEOF
   return 0
+}
+
+# Bind (or refresh) the forwarded port. Returns:
+#   0 bound
+#   1 transient failure - timeout, refused, 5xx, unparseable. Retry later.
+#   2 signature rejected ("bad signature") - deterministic; only a fresh
+#     signature can fix it, and that costs a new port number.
+#   3 wrong gateway ("Unauthorized client") - the request reached a PIA server
+#     that did not issue our signature, i.e. the pin is stale. Re-pin, do NOT
+#     re-sign: measured that a signature from server A is accepted by server B
+#     once we are actually connected through B.
+# Cases 2 and 3 are deterministic, so they return immediately rather than
+# burning retries. Only case 1 retries.
+pf_bind() {
+  local pb_try
+  pb_try=0
+  while [ $pb_try -lt 3 ]; do
+    pb_try=$((pb_try + 1))
+    binding=$(curl --connect-timeout 8 --max-time 15 -sG $PF_CONNECT $PF_CERT \
+              --data-urlencode "payload=$payload" \
+              --data-urlencode "signature=$signature" \
+              "https://$PF_GATEWAY:19999/bindPort")
+    [ "$(echo "$binding" | jq -r '.status' 2>/dev/null)" = "OK" ] && return 0
+    case "$(echo "$binding" | jq -r '.message' 2>/dev/null)" in
+      *"bad signature"*)       return 2 ;;
+      *"Unauthorized client"*) return 3 ;;
+    esac
+    [ $pb_try -lt 3 ] && sleep 4
+  done
+  return 1
+}
+
+# Replace an expired signature and re-bind. Called only when pf_bind() reported a
+# measured "bad signature" - PIA expires them after roughly two months.
+#
+# Deliberately last-resort: a fresh signature always comes back with a DIFFERENT
+# port (measured: 45867 -> 52643, "replacing old data for this token"), which costs
+# the user their forwarded port. It is NOT the failover remedy - a signature issued
+# by server A is accepted by server B once we are connected through B, so a stale
+# pin is fixed by pf_repin(), not by re-signing.
+#
+# Runs through the established tunnel; no firewall or routing change.
+# Returns pf_bind()'s classification, or 1 if no fresh signature could be obtained.
+pf_resign_and_bind() {
+  [ -z "$piaToken" ] && return 1
+  pia_sig=$(curl --connect-timeout 8 --max-time 15 --get -s $PF_CONNECT $PF_CERT --data-urlencode "token=$piaToken" "https://$PF_GATEWAY:19999/getSignature")
+  [ "$(echo "$pia_sig" | jq -r '.status' 2>/dev/null)" = "OK" ] || return 1
+  signature=$(echo "$pia_sig" | jq -r '.signature')
+  payload=$(echo "$pia_sig" | jq -r '.payload')
+  new_port=$(echo "$payload" | base64 -d | jq -r '.port' 2>/dev/null)
+  if [ -n "$new_port" ] && [ "$new_port" != "null" ] && [ "$new_port" != "$PF_PORT" ]; then
+    # A changed port cannot be applied to a running qBittorrent: it keeps its
+    # preferences in memory and rewrites qBittorrent.conf when it saves, so an edit
+    # here is reverted (measured: wrote 59999, read back 42940). Leaving it would
+    # mean the firewall allows the new port, the process listens on the old one,
+    # and PIA forwards neither to anything - inbound silently dead.
+    #
+    # So restart, exactly as the token-expiry escalation does: save resume data,
+    # exit, and let the restart policy bring us back into a clean startup that
+    # requests a port and writes a consistent config. Leak-safe: no firewall change
+    # here, and startup rebuilds the kill switch before qBittorrent launches.
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] PIA issued a new forwarded port ($new_port, was $PF_PORT). The running\n"
+    printf "          qBittorrent cannot be moved to it in place, so the container will restart to pick it up.\n"
+    printf "          If it does not come back, set a restart policy: docker update --restart unless-stopped <name>\n"
+    qbt_pid=$(pgrep -x qbittorrent-nox)
+    if [ -n "$qbt_pid" ]; then
+      kill -TERM "$qbt_pid" 2>/dev/null
+      while pgrep -x qbittorrent-nox > /dev/null; do sleep 1; done
+    fi
+    exit 5
+  fi
+  pf_bind
 }
 
 # Re-pin the port-forward gateway after a reconnect. Both VPN clients can come
@@ -1407,67 +1512,18 @@ reconnect_vpn() {
       printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Reconnected, but could not re-pin the port-forward gateway - port forwarding will be retried next cycle\n"
       return 0
     fi
-    # Retry the bind itself before concluding anything is wrong with the signature:
-    # the pin is valid and the payload unexpired, so a failure here is far more
-    # likely to be a blip than a rejection.
-    bind_try=0
-    while [ $bind_try -lt 3 ]; do
-      bind_try=$((bind_try + 1))
-      binding=$(curl --connect-timeout 8 --max-time 15 -sG $PF_CONNECT $PF_CERT --data-urlencode "payload=$payload" --data-urlencode "signature=$signature" https://$PF_GATEWAY:19999/bindPort)
-      [ "$(echo "$binding" | jq -r '.status' 2>/dev/null)" = "OK" ] && break
-      [ $bind_try -lt 3 ] && sleep 4
-    done
-    # Only reach for a new signature on an EXPLICIT, parseable rejection. Testing
-    # merely for "not OK" made this reachable by every transient failure - a curl
-    # timeout, a refused connection or a 5xx all leave $binding empty or non-JSON,
-    # jq prints nothing, and "" != "OK" is true. Combined with a fresh signature
-    # always carrying a different port, that turned one blip into a container
-    # restart and a lost forwarded port. An unparseable or empty body is treated as
-    # transient: leave the pin alone and let the next cycle retry.
-    if [ "$(echo "$binding" | jq -r '.status' 2>/dev/null)" = "ERROR" ] && [ -n "$piaToken" ]; then
-      # NOT for failover: measured that a signature issued by server A is accepted
-      # by server B once we are connected through B ("port scheduled for add"), so
-      # re-pinning alone covers a failover. The earlier "Unauthorized client" was
-      # about the request not arriving through the tunnel to that server, not about
-      # which server signed it.
-      #
-      # This path is therefore only for a genuinely invalid signature - PIA expires
-      # them after roughly two months. It is deliberately last-resort, because a
-      # fresh signature comes with a DIFFERENT port (measured: 45867 -> 52643,
-      # "replacing old data for this token"), which costs the user their forwarded
-      # port. Runs through the established tunnel; no firewall change.
-      pia_sig=$(curl --connect-timeout 8 --max-time 15 --get -s $PF_CONNECT $PF_CERT --data-urlencode "token=$piaToken" "https://$PF_GATEWAY:19999/getSignature")
-      if [ "$(echo "$pia_sig" | jq -r '.status' 2>/dev/null)" = "OK" ]; then
-        signature=$(echo "$pia_sig" | jq -r '.signature')
-        payload=$(echo "$pia_sig" | jq -r '.payload')
-        new_port=$(echo "$payload" | base64 -d | jq -r '.port' 2>/dev/null)
-        if [ -n "$new_port" ] && [ "$new_port" != "null" ] && [ "$new_port" != "$PF_PORT" ]; then
-          # A changed port cannot be applied to a running qBittorrent: it keeps its
-          # preferences in memory and rewrites qBittorrent.conf when it saves, so an
-          # edit here is reverted (measured: wrote 59999, read back 42940). Leaving
-          # it would mean the firewall allows the new port, the process listens on
-          # the old one, and PIA forwards neither to anything - inbound silently
-          # dead, surfaced only by a log line.
-          #
-          # So restart instead, exactly as the token-expiry escalation does: save
-          # resume data, exit, and let the restart policy bring us back into a clean
-          # startup that requests a port and writes a consistent config. Leak-safe:
-          # no firewall change here, and startup rebuilds the kill switch before
-          # qBittorrent launches.
-          printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] PIA issued a new forwarded port ($new_port, was $PF_PORT). The running\n"
-          printf "          qBittorrent cannot be moved to it in place, so the container will restart to pick it up.\n"
-          printf "          If it does not come back, set a restart policy: docker update --restart unless-stopped <name>\n"
-          qbt_pid=$(pgrep -x qbittorrent-nox)
-          if [ -n "$qbt_pid" ]; then
-            kill -TERM "$qbt_pid" 2>/dev/null
-            while pgrep -x qbittorrent-nox > /dev/null; do sleep 1; done
-          fi
-          exit 5
-        fi
-        binding=$(curl --connect-timeout 8 --max-time 15 -sG $PF_CONNECT $PF_CERT --data-urlencode "payload=$payload" --data-urlencode "signature=$signature" https://$PF_GATEWAY:19999/bindPort)
-      fi
+    pf_bind
+    pf_bind_rc=$?
+    # Only a measured "bad signature" reaches here. An earlier version gated on
+    # status = "ERROR", which - measured against a live gateway - matches ONLY the
+    # "Unauthorized client" wrong-gateway response, the one case a fresh signature
+    # cannot fix, while a genuine signature rejection carries no status field at
+    # all and so was excluded entirely. pf_bind() classifies on the message.
+    if [ $pf_bind_rc -eq 2 ]; then
+      pf_resign_and_bind
+      pf_bind_rc=$?
     fi
-    if [ "$(echo "$binding" | jq -r '.status')" = "OK" ]; then
+    if [ $pf_bind_rc -eq 0 ]; then
       printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Reconnected - port forwarding restored (port $PF_PORT)\n"
       return 0
     fi
@@ -1514,6 +1570,9 @@ exec doas -u qbtUser sh -c "umask ${UMASK:-022}; exec qbittorrent-nox --webui-po
 
 i=1
 vpn_fail_count=0
+# Consecutive transient port-forward refresh failures. A single blip must not tear
+# down a healthy tunnel, so the refresh tolerates one before reconnecting.
+pf_soft_fail=0
 tunnel_state=up          # last observed state, for transition logging
 tunnel_down_since=0      # epoch seconds when it went down
 while : ; do
@@ -1542,20 +1601,37 @@ while : ; do
     i=1
     need_reconnect=false
     if is_enabled "$PORT_FORWARDING"; then
-      binding=$(curl --connect-timeout 8 --max-time 15 -sG \
-            $PF_CONNECT \
-            $PF_CERT \
-            --data-urlencode "payload=$payload" \
-            --data-urlencode "signature=$signature" \
-            https://$PF_GATEWAY:19999/bindPort)
-
-#      now just for debugging
-#      printf "Port Forwarding - $(echo $binding | jq -r '.message')\n"
-
-      if [ "$(echo "$binding" | jq -r '.status')" != "OK" ]; then
-        printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Port forwarding refresh failed\n"
-        need_reconnect=true
-      fi
+      pf_bind
+      case $? in
+        0)
+          pf_soft_fail=0
+          ;;
+        1)
+          # Transient. This runs every cycle and is what DECIDES the tunnel is
+          # broken, so treating a blip as failure here tears down a healthy
+          # tunnel - the retry added to the reconnect path cannot help, because
+          # by then the teardown has already happened. Tolerate two in a row.
+          pf_soft_fail=$((pf_soft_fail + 1))
+          if [ $pf_soft_fail -ge 2 ]; then
+            printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Port forwarding refresh failed $pf_soft_fail cycles running - reconnecting\n"
+            need_reconnect=true
+          else
+            printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Port forwarding refresh did not respond - retrying next cycle\n"
+          fi
+          ;;
+        2)
+          printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] PIA rejected the port-forward signature - it has expired and must be replaced\n"
+          pf_soft_fail=0
+          if ! pf_resign_and_bind; then
+            printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Could not obtain a replacement signature - retrying next cycle\n"
+          fi
+          ;;
+        3)
+          printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Port-forward gateway no longer recognises us - re-pinning\n"
+          pf_soft_fail=0
+          need_reconnect=true
+          ;;
+      esac
     else
       # No port forwarding to rebind, but the tunnel itself can still die
       # silently (interface stays up, no error - torrents just hang with no
