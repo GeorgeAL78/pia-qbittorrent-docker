@@ -144,6 +144,44 @@ fi
 # convert vpn to lower case for dir
 server=$(echo "$PIA_REGION" | tr '[:upper:]' '[:lower:]')
 
+# Resolve PIA_REGION to exactly one region, preferring an exact id match, then an
+# exact name match, and only then a substring match. The old lookup was substring-
+# only, so short ids silently landed on the wrong place: "no" matched IT Milano
+# rather than Norway, and "in" matched NL Netherlands rather than India.
+region_match=$(jq -r --arg SERVER "$server" '
+  def normalize: gsub("[_-]"; " ") | ascii_downcase | gsub("\\s+"; " ");
+  ($SERVER | ascii_downcase) as $raw |
+  ($SERVER | normalize) as $search |
+  [.regions[] | select((.id | ascii_downcase) == $raw)] as $exact_id |
+  [.regions[] | select((.name | normalize) == $search)] as $exact_name |
+  [.regions[] | select((.name | normalize | contains($search)) or (.id | normalize | contains($search)))] as $fuzzy |
+  (if ($exact_id | length) > 0 then {how:"exact", r:$exact_id[0], n:1}
+   elif ($exact_name | length) > 0 then {how:"exact", r:$exact_name[0], n:1}
+   elif ($fuzzy | length) > 0 then {how:"fuzzy", r:$fuzzy[0], n:($fuzzy|length)}
+   else {how:"none", r:null, n:0} end)
+  | if .r then "\(.how)|\(.r.id)|\(.r.name)|\(.n)" else "none|||0" end
+' /app/data.json 2>/dev/null)
+
+region_how=$(printf "%s" "$region_match" | cut -d"|" -f1)
+region_id=$(printf "%s" "$region_match" | cut -d"|" -f2)
+region_name=$(printf "%s" "$region_match" | cut -d"|" -f3)
+region_n=$(printf "%s" "$region_match" | cut -d"|" -f4)
+
+# PIA names the OpenVPN profiles after the region NAME (lowercased, spaces to
+# underscores) - not after the id - so derive it that way rather than trusting the
+# raw input. Falls back to the raw input if the derived profile is missing.
+ovpn_profile="$server"
+if [ -n "$region_name" ]; then
+  derived=$(printf "%s" "$region_name" | tr "[:upper:]" "[:lower:]" | tr " " "_")
+  if [ -f "/openvpn/nextgen/$derived.ovpn" ]; then
+    ovpn_profile="$derived"
+  fi
+fi
+
+if [ "$region_how" = "fuzzy" ] && [ "$region_n" -gt 1 ]; then
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] PIA_REGION '$PIA_REGION' is ambiguous ($region_n regions match) - using '$region_name'. Use an exact region id to be certain.\n"
+fi
+
 ############################################
 # CHECK if VPN_CLIENT should be openvpn or wireguard
 ############################################
@@ -159,8 +197,16 @@ fi
 # CHECK PARAMETERS
 ############################################
 if [ "$VPN_CLIENT" = "openvpn" ]; then
-  cat "/openvpn/nextgen/$server.ovpn" > /dev/null
-  exitOnError $? "/openvpn/nextgen/$server.ovpn is not accessible"
+  if [ ! -f "/openvpn/nextgen/$ovpn_profile.ovpn" ]; then
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] No OpenVPN profile for PIA_REGION '$PIA_REGION'.\n"
+    if [ -n "$region_name" ]; then
+      printf "          Matched region '$region_name' but /openvpn/nextgen/$ovpn_profile.ovpn does not exist.\n"
+      printf "          This region may be WireGuard-only - try VPN_CLIENT=wireguard, or pick another region.\n"
+    else
+      printf "          That region was not found in the PIA server list.\n"
+    fi
+    exit 1
+  fi
 fi
 if [ -z $WEBUI_PORT ]; then
   WEBUI_PORT=8888
@@ -312,12 +358,9 @@ if [ -f /proc/net/if_inet6 ] && ( [ $(sysctl -n net.ipv6.conf.all.disable_ipv6) 
     printf " * Got Public key\n"
   fi
 
-  if regiondata=$(jq --arg SERVER "$server" -er '
-                  def normalize: gsub("[_-]"; " ") | ascii_downcase | gsub("\\s+"; " ");
-                  ($SERVER | normalize) as $search |
-                  [.regions[] | 
-                  select((.name | normalize | contains($search)) or (.id | normalize | contains($search)))] |
-                  if length > 0 then .[0] else empty end' /app/data.json); then
+  # Use the region resolved earlier (exact id > exact name > substring) rather than
+  # repeating a substring-only lookup here, so both VPN clients agree on the region.
+  if regiondata=$(jq -e --arg RID "$region_id" '.regions[] | select(.id == $RID)' /app/data.json); then
     
     printf " * Got PIA region data\n"
     
@@ -446,7 +489,7 @@ else
   # Reading chosen OpenVPN configuration
   ############################################
   printf " * Reading OpenVPN configuration...\n"
-  CONNECTIONSTRING=$(ack 'privacy.network' "/openvpn/nextgen/$server.ovpn")
+  CONNECTIONSTRING=$(ack 'privacy.network' "/openvpn/nextgen/$ovpn_profile.ovpn")
   exitOnError $?
   PORT=$(echo $CONNECTIONSTRING | cut -d' ' -f3)
   if [ "$PORT" = "" ]; then
@@ -482,7 +525,7 @@ else
   exitOnError $? "Cannot copy crt file to $TARGET_PATH"
   cp -f *.pem "$TARGET_PATH"
   exitOnError $? "Cannot copy pem file to $TARGET_PATH"
-  cp -f "$server.ovpn" "$TARGET_PATH/config.ovpn"
+  cp -f "$ovpn_profile.ovpn" "$TARGET_PATH/config.ovpn"
   exitOnError $? "Cannot copy $server.ovpn file to $TARGET_PATH"
   sed -i "/$CONNECTIONSTRING/d" "$TARGET_PATH/config.ovpn"
   exitOnError $? "Cannot delete '$CONNECTIONSTRING' from $TARGET_PATH/config.ovpn"
