@@ -54,6 +54,16 @@ jobs:
           shellcheck -s sh -f gcc entrypoint.sh | head -40 || true
           echo "total findings: $(shellcheck -s sh -f gcc entrypoint.sh | wc -l)"
 
+      # POSIX sh creates a function when its definition is EXECUTED, not when the
+      # file is parsed, so a call above the definition is a silent 127. That
+      # shipped once (v5.2.3-16: pf_bind called at 1191, defined at 1374) and left
+      # port forwarding dead for the life of the container. Neither sh -n nor
+      # shellcheck flags it, so it needs its own gate.
+      - name: Functions defined before first use
+        run: |
+          chmod +x scripts/check-function-order.sh
+          ./scripts/check-function-order.sh entrypoint.sh healthcheck.sh
+
       - name: Validate Unraid templates (XML must parse)
         run: |
           for f in pia-qbittorrent.xml ca_profile.xml; do
