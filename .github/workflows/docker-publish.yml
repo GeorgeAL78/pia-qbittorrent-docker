@@ -10,8 +10,15 @@ env:
   REGISTRY_IMAGE: gjergjk/pia-qbittorrent
 
 jobs:
+  # A tag used to publish with no checks at all - which is how v5.2.3-16 shipped
+  # with port forwarding dead. Same reusable workflow CI runs, so the gates cannot
+  # drift between the two paths.
+  lint:
+    uses: ./.github/workflows/lint.yml
+
   build:
     name: Build ${{ matrix.platform }}
+    needs: [lint]
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read

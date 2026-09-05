@@ -10,27 +10,51 @@
 # of the container, and the refresh loop could never recover it. Neither `sh -n`
 # nor `shellcheck` flags this - it is valid shell, just wrong at runtime.
 #
+# DEFINITION FORMS RECOGNISED. All four of these are legal POSIX and all four fail
+# identically at runtime when called early, so all four are matched:
+#
+#   f() {          f(){          f () {          f()
+#                                                {
+#
+# An earlier version of this script matched only the first, which meant a
+# reformat could reintroduce the bug with a green build. If you add a form this
+# does not recognise, the gate silently stops protecting that function - so
+# widen the matcher rather than working around it.
+#
+# What this does NOT do: detect calls to functions that are never defined at all.
+# That is a different class, and `not found` in the container startup log is the
+# standing assertion for it.
+#
 # Usage: check-function-order.sh <file> [file...]
 status=0
 
 for f in "$@"; do
   [ -f "$f" ] || continue
   out=$(awk '
-    # Definition: a top-level "name() {" at the start of a line.
-    /^[a-z_][a-z0-9_]*\(\) \{/ {
-      name = $1
-      sub(/\(\).*/, "", name)
-      if (!(name in def)) def[name] = NR
-    }
     { line[NR] = $0 }
+    # Candidate definition: optional indent, name, optional space, (), then either
+    # "{" on this line or nothing more (with "{" expected on the next line).
+    /^[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*\([[:space:]]*\)[[:space:]]*\{?[[:space:]]*$/ {
+      cand = $0
+      sub(/^[[:space:]]*/, "", cand)
+      sub(/[[:space:]]*\(.*$/, "", cand)
+      # Brace on this line, or on the next one by itself.
+      if ($0 ~ /\{[[:space:]]*$/) { if (!(cand in def)) def[cand] = NR }
+      else { pend = cand; pendline = NR; next }
+    }
+    # Resolve the two-line form: "{" alone on the line after "name()".
+    pend != "" {
+      if ($0 ~ /^[[:space:]]*\{[[:space:]]*$/ && NR == pendline + 1) {
+        if (!(pend in def)) def[pend] = pendline
+      }
+      pend = ""
+    }
     END {
       for (n in def) {
         for (i = 1; i < def[n]; i++) {
-          # Skip comments and the definition line itself.
           if (line[i] ~ /^[[:space:]]*#/) continue
-          if (line[i] ~ ("^[[:space:]]*" n "\\(\\)")) continue
-          # A call: the name bounded by non-identifier characters, not followed
-          # by "(" (which would be another definition or a subshell construct).
+          # Skip the definition line itself in any of its forms.
+          if (line[i] ~ ("^[[:space:]]*" n "[[:space:]]*\\([[:space:]]*\\)")) continue
           if (line[i] ~ ("(^|[^a-zA-Z0-9_])" n "([^a-zA-Z0-9_(]|$)")) {
             printf "  %s called at line %d but defined at line %d\n", n, i, def[n]
             bad = 1

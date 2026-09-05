@@ -131,8 +131,9 @@ docker run -d --init --name=pia-qbittorrent --restart unless-stopped \
 | `OPEN_ADDITIONAL_LOCAL_PORTS` | | Comma-separated extra LAN ports to open, e.g. `8989,7878`. For containers sharing this container's network (`network_mode: container:...`) whose web UIs would otherwise be blocked by the kill switch |
 | `DNS_SERVERS` | `9.9.9.9,149.112.112.112` | Comma-separated DNS servers |
 | `LEGACY_IPTABLES` | `false` | Use legacy iptables instead of nftables |
+| `VPN_LOG_DIR` | `/logs` | Where the VPN client writes its log. Must be root-owned: the port-forward hostname is read from this log and startup aborts on errors found in it, so a directory the container user can write is refused. A path under `/config` (or any world-writable directory) is **ignored with a warning and `/logs` is used instead** |
 | `TZ` | | Timezone e.g. `America/New_York` |
-| `HOSTHEADERVALIDATION` | | Set to `false` if having trouble accessing the WebUI |
+| `HOSTHEADERVALIDATION` | | Set to `false` if having trouble accessing the WebUI. Note that the bundled config sets `WebUI\ServerDomains=*` so the container is reachable by any IP or hostname — which means host header validation accepts everything and this setting has no practical effect. **CSRF protection is what actually guards the Web UI.** To make it meaningful, set `WebUI\ServerDomains` to your own hostname in `/config/qBittorrent/config/qBittorrent.conf` |
 | `CSRFPROTECTION` | | Set to `false` if having trouble accessing the WebUI |
 
 ---

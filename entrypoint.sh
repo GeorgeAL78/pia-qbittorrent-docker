@@ -655,6 +655,28 @@ else
 fi
 printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Setting firewall\n"
 printf " * Blocking everything\n"
+# Policies FIRST, then flush. The other order leaves a window in which the filter
+# table has been emptied but OUTPUT is still the default ACCEPT, so the container is
+# briefly wide open. Setting the policy first means the box is either running the
+# previous ruleset or fully closed, never neither. Nothing user-facing runs this
+# early - qBittorrent is started much later - so this is closing a window rather
+# than fixing an observed leak, but the kill switch should not have an open moment
+# by construction.
+#
+# Changing the policy does not affect these iptables calls themselves: they talk to
+# the kernel over netlink, not through the filter table.
+printf "   * Block input traffic..."
+OUTPUT=$(iptables -P INPUT DROP 2>&1)
+exitOnError $? "$OUTPUT"
+printf "DONE\n"
+printf "   * Block output traffic..."
+OUTPUT=$(iptables -P OUTPUT DROP 2>&1)
+exitOnError $? "$OUTPUT"
+printf "DONE\n"
+printf "   * Block forward traffic..."
+OUTPUT=$(iptables -P FORWARD DROP 2>&1)
+exitOnError $? "$OUTPUT"
+printf "DONE\n"
 printf "   * Deleting all iptables rules..."
 OUTPUT=$(iptables --flush 2>&1)
 exitOnError $? "$OUTPUT"
@@ -663,20 +685,6 @@ exitOnError $? "$OUTPUT"
 OUTPUT=$(iptables -t nat --flush 2>&1)
 exitOnError $? "$OUTPUT"
 OUTPUT=$(iptables -t nat --delete-chain 2>&1)
-exitOnError $? "$OUTPUT"
-printf "DONE\n"
-printf "   * Block input traffic..."
-OUTPUT=$(iptables -P INPUT DROP 2>&1)
-exitOnError $? "$OUTPUT"
-printf "DONE\n"
-printf "   * Block output traffic..."
-OUTPUT=$(iptables -F OUTPUT 2>&1)
-exitOnError $? "$OUTPUT"
-OUTPUT=$(iptables -P OUTPUT DROP 2>&1)
-exitOnError $? "$OUTPUT"
-printf "DONE\n"
-printf "   * Block forward traffic..."
-OUTPUT=$(iptables -P FORWARD DROP 2>&1)
 exitOnError $? "$OUTPUT"
 printf "DONE\n"
 printf "   * Block all IPv6 traffic..."
@@ -1655,10 +1663,32 @@ while : ; do
           # reconnect if the re-pin or the retry still fails.
           printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Port-forward gateway no longer recognises us - re-pinning\n"
           pf_soft_fail=0
-          if pf_repin && pf_bind; then
-            printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Re-pinned to the current gateway - port forwarding restored\n"
-          else
+          if ! pf_repin; then
             need_reconnect=true
+          else
+            # Classify the retry too. "pf_repin && pf_bind" treated every non-zero
+            # the same, so a transient blip or an expired signature after a
+            # successful re-pin still tore the tunnel down - the thing this arm
+            # exists to avoid.
+            pf_bind
+            case $? in
+              0)
+                printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Re-pinned to the current gateway - port forwarding restored\n"
+                ;;
+              1)
+                pf_soft_fail=$((pf_soft_fail + 1))
+                printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Re-pinned, but the bind did not respond - retrying next cycle\n"
+                ;;
+              2)
+                printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] PIA rejected the port-forward signature - it has expired and must be replaced\n"
+                if ! pf_resign_and_bind; then
+                  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Could not obtain a replacement signature - retrying next cycle\n"
+                fi
+                ;;
+              *)
+                need_reconnect=true
+                ;;
+            esac
           fi
           ;;
       esac
