@@ -31,4 +31,12 @@ services:
             - ./downloads:/downloads
         ports:
             - "8888:8888"
+        # Only needed if the container reports that ip6tables is unavailable
+        # (older kernels, some NAS platforms). The kill switch blocks IPv6 with
+        # ip6tables where it exists; where it does not, these are the fallback.
+        # They cannot be applied later - Docker mounts /proc/sys read-only, so
+        # the container itself cannot set them at runtime.
+        #sysctls:
+        #    - net.ipv6.conf.all.disable_ipv6=1
+        #    - net.ipv6.conf.default.disable_ipv6=1
         restart: unless-stopped
