@@ -9,6 +9,11 @@ name: Lint and validate
 on:
   workflow_call:
 
+# Least privilege: this only checks out and lints. A reusable workflow does not
+# inherit the caller's permissions, so it declares its own.
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Lint and validate

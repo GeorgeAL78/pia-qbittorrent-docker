@@ -12,6 +12,10 @@ on:
 # A rapid series of pushes to master (each file committed through the GitHub API is
 # its own push) used to start a full CI run per commit, all but the last already
 # obsolete. Only the newest run per branch matters, so supersede the rest.
+# Least privilege: CI never pushes an image or writes to the repo.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true

@@ -9,6 +9,12 @@ on:
 env:
   REGISTRY_IMAGE: gjergjk/pia-qbittorrent
 
+# Default to read-only. The jobs that need more declare it themselves: build needs
+# packages: write, and merge additionally needs contents: write to create the
+# GitHub Release. The called lint workflow declares its own.
+permissions:
+  contents: read
+
 jobs:
   # A tag used to publish with no checks at all - which is how v5.2.3-16 shipped
   # with port forwarding dead. Same reusable workflow CI runs, so the gates cannot
