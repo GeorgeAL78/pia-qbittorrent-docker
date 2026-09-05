@@ -1,9 +1,38 @@
 #!/bin/sh
 
-# Check VPN interface exists
+# Check the VPN interface exists
 if ! ifconfig | grep -q 'tun0\|pia'; then
     echo "No VPN interface found" >&2
     exit 1
+fi
+
+# The interface existing does not mean the tunnel is alive - WireGuard leaves it
+# up even after the peer stops responding, which is exactly the failure where
+# torrents hang with no error. For WireGuard, check handshake freshness: a local
+# read, no network traffic generated. PersistentKeepalive is 25s, so a healthy
+# tunnel's handshake is never old; 180s allows for rekey jitter and for an
+# in-progress reconnect that is about to succeed.
+if ifconfig | grep -q 'pia'; then
+    HS=$(wg show pia latest-handshakes 2>/dev/null | awk 'NR==1{print $2}')
+    if [ -n "$HS" ] && [ "$HS" -gt 0 ] 2>/dev/null; then
+        AGE=$(( $(date +%s) - HS ))
+        if [ "$AGE" -ge 180 ]; then
+            echo "VPN tunnel is stale - last WireGuard handshake ${AGE}s ago" >&2
+            exit 1
+        fi
+    else
+        echo "VPN interface is up but has never completed a handshake" >&2
+        exit 1
+    fi
+fi
+
+# For OpenVPN, confirm the client is actually still running. There is no
+# equivalent built-in freshness signal without a management socket.
+if ifconfig | grep -q 'tun0'; then
+    if ! pgrep -x openvpn > /dev/null 2>&1; then
+        echo "tun0 exists but the openvpn process is gone" >&2
+        exit 1
+    fi
 fi
 
 # Check web UI
