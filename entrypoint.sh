@@ -1252,6 +1252,27 @@ WGEOF
   return 0
 }
 
+# Re-pin the port-forward gateway after a reconnect. Both VPN clients can come
+# back on a DIFFERENT server than they left on - WireGuard because wg_refresh_config
+# fails over through the region's server list, OpenVPN because the profile carries
+# several remotes - and PF_CONNECT pins the gateway by CN and IP. Left stale, every
+# post-failover bindPort is aimed at the server we just abandoned, so the rebind
+# fails on a perfectly healthy tunnel and drives the reconnect counter toward the
+# restart escalation. Cheap for WireGuard (local values); OpenVPN re-reads the
+# route and re-probes the certificate.
+pf_repin() {
+  if [ "$VPN_CLIENT" = "wireguard" ]; then
+    PF_GATEWAY="$wg_cn"
+    PF_CONNECT="--connect-to $wg_cn::$wg_ip:"
+    return 0
+  fi
+  pf_ip=$(route -n | grep UG | grep "$VPN_DEVICE" | tr -s ' ' | cut -d' ' -f2 | head -1)
+  [ -z "$pf_ip" ] && return 1
+  PF_GATEWAY="$pf_ip"
+  PF_CONNECT=""
+  pf_setup_openvpn_tls
+}
+
 reconnect_vpn() {
   printf "\n[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Reconnecting VPN in place (no container restart)\n"
   if [ "$VPN_CLIENT" = "wireguard" ]; then
@@ -1299,7 +1320,33 @@ reconnect_vpn() {
   fi
 
   if is_enabled "$PORT_FORWARDING"; then
+    # Point at whichever server we actually came back on before rebinding.
+    pf_repin || return 1
     binding=$(curl --connect-timeout 8 --max-time 15 -sG $PF_CONNECT $PF_CERT --data-urlencode "payload=$payload" --data-urlencode "signature=$signature" https://$PF_GATEWAY:19999/bindPort)
+    if [ "$(echo "$binding" | jq -r '.status')" != "OK" ] && [ -n "$piaToken" ]; then
+      # A signature is issued by a specific gateway; after a failover the new one
+      # can refuse it. Ask the current gateway for a fresh one and retry once.
+      # This runs THROUGH the tunnel (verified up above), so the kill switch is
+      # untouched: no firewall change, and the gateway is already in VPNIPS.
+      pia_sig=$(curl --connect-timeout 8 --max-time 15 --get -s $PF_CONNECT $PF_CERT --data-urlencode "token=$piaToken" "https://$PF_GATEWAY:19999/getSignature")
+      if [ "$(echo "$pia_sig" | jq -r '.status' 2>/dev/null)" = "OK" ]; then
+        signature=$(echo "$pia_sig" | jq -r '.signature')
+        payload=$(echo "$pia_sig" | jq -r '.payload')
+        new_port=$(echo "$payload" | base64 -d | jq -r '.port' 2>/dev/null)
+        if [ -n "$new_port" ] && [ "$new_port" != "null" ] && [ "$new_port" != "$PF_PORT" ]; then
+          printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] PIA issued a new forwarded port after failover: $new_port (was $PF_PORT)\n"
+          printf "          The firewall and qBittorrent.conf are updated, but qBittorrent is already running and keeps\n"
+          printf "          listening on $PF_PORT until it restarts - incoming connections stay closed until then.\n"
+          iptables -D INPUT -i $VPN_DEVICE -p tcp --dport $PF_PORT -j ACCEPT 2>/dev/null
+          iptables -D INPUT -i $VPN_DEVICE -p udp --dport $PF_PORT -j ACCEPT 2>/dev/null
+          PF_PORT="$new_port"
+          iptables -A INPUT -i $VPN_DEVICE -p tcp --dport $PF_PORT -j ACCEPT
+          iptables -A INPUT -i $VPN_DEVICE -p udp --dport $PF_PORT -j ACCEPT
+          sed -i "s/Session\\\Port=[0-9]*/Session\\\Port=$PF_PORT/g" /config/qBittorrent/config/qBittorrent.conf
+        fi
+        binding=$(curl --connect-timeout 8 --max-time 15 -sG $PF_CONNECT $PF_CERT --data-urlencode "payload=$payload" --data-urlencode "signature=$signature" https://$PF_GATEWAY:19999/bindPort)
+      fi
+    fi
     if [ "$(echo "$binding" | jq -r '.status')" = "OK" ]; then
       printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Reconnected - port forwarding restored (port $PF_PORT)\n"
       return 0
