@@ -26,13 +26,24 @@ jobs:
             dash -n "$f"  && echo "dash -n OK: $f"
           done
 
-      # Informational: this codebase has ~200 mostly-stylistic findings
-      # (printf format strings, intentional word splitting), so shellcheck runs
-      # for visibility rather than as a gate. Errors are surfaced separately below.
-      - name: ShellCheck (informational)
+      - name: Install ShellCheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+
+      # Hard gate. Both scripts are clean at severity=error, so any new one is a
+      # real regression rather than pre-existing noise. Kept separate from the
+      # informational run below so the gate cannot be drowned out by style hits.
+      - name: ShellCheck (errors only - gate)
+        run: |
+          for f in entrypoint.sh healthcheck.sh; do
+            [ -f "$f" ] || continue
+            shellcheck -s sh -S error -f gcc "$f" && echo "no errors: $f"
+          done
+
+      # Informational: ~200 mostly-stylistic findings remain (printf format
+      # strings, intentional word splitting). Surfaced for visibility only.
+      - name: ShellCheck (all severities - informational)
         continue-on-error: true
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           shellcheck -s sh -f gcc entrypoint.sh | head -40 || true
           echo "total findings: $(shellcheck -s sh -f gcc entrypoint.sh | wc -l)"
 
@@ -48,12 +59,16 @@ jobs:
 
       # The env vars the script reads should be documented for users. This is a
       # reminder, not a gate - internal shell locals also match the pattern.
+      # -w matters: without it PORT matches PORT_FORWARDING and almost nothing
+      # is ever reported, which made the earlier version of this check a no-op.
       - name: Env vars referenced vs documented
         continue-on-error: true
         run: |
+          missing=0
           for v in $(grep -oE '\$\{?[A-Z][A-Z0-9_]{2,}\}?' entrypoint.sh | tr -d '${}' | sort -u); do
-            grep -q "$v" README.md || echo "not in README: $v"
+            grep -qw "$v" README.md || { echo "not in README: $v"; missing=$((missing + 1)); }
           done
+          echo "undocumented candidates: $missing (expected: internal locals only)"
 
   build:
     name: Build image (no push)
@@ -70,3 +85,9 @@ jobs:
           context: .
           platforms: linux/amd64
           push: false
+          # A cold build compiles Boost, libtorrent and qBittorrent from source
+          # (~25 min). Caching the layers keeps a docs-only PR to a couple of
+          # minutes; the cache is scoped to this workflow so it never collides
+          # with the release build.
+          cache-from: type=gha,scope=ci-amd64
+          cache-to: type=gha,mode=max,scope=ci-amd64
