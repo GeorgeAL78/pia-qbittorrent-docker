@@ -384,14 +384,19 @@ When `/auth.conf` is present, `PIA_USERNAME` and `PIA_PASSWORD` are ignored.
 
 ## Hooks
 
-Create `/config/post-vpn-connect.sh` to run custom code after the VPN connects but before qBittorrent starts. Runs as root.
+Create `/config/post-vpn-connect.sh` to run custom code after the VPN connects but before qBittorrent starts.
+
+It runs as `qbtUser`, not as root. `/config` is writable by that user, so anything placed there is only as trustworthy as the user account itself - running it as root would let a compromised qBittorrent escalate to root inside the container. A hook that genuinely needs root must be baked into the image at `/app/post-vpn-connect.sh`, which the container user cannot write.
 
 Available variables:
 
 | Variable | Description |
 |----------|-------------|
-| `PF_PORT` | The PIA forwarded port |
+| `PF_PORT` | The PIA forwarded port (empty if port forwarding is off or unsupported) |
 | `WEBUI_PORT` | The Web UI port |
+| `VPN_DEVICE` | The VPN interface name (`pia` or `tun0`) |
+| `PIA_REGION` | The region as you configured it |
+| `VPN_CLIENT` | `wireguard` or `openvpn` |
 | `PUID` | The user ID qBittorrent runs as |
 | `PGID` | The group ID qBittorrent runs as |
 
@@ -442,6 +447,11 @@ docker build -t gjergjk/pia-qbittorrent .
 
 - **Unauthorized when using proxy for WebUI**
   - **Fix**: Set `CSRFPROTECTION=false`
+
+- **Cannot block IPv6: ip6tables is unavailable**
+  - The kill switch blocks IPv6 with `ip6tables`. On a host that has no IPv6 support in its kernel or iptables build, the container refuses to start rather than run with IPv6 unprotected
+  - The container cannot fall back to `sysctl` at runtime: Docker mounts `/proc/sys` read-only, so the write silently has no effect
+  - **Fix**: set them when *creating* the container - `--sysctl net.ipv6.conf.all.disable_ipv6=1 --sysctl net.ipv6.conf.default.disable_ipv6=1`, or the equivalent commented-out `sysctls:` block in `docker-compose.yml`
 
 - **nft: Protocol not supported**
   - Occurs on older kernels or Synology NAS
