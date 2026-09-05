@@ -481,7 +481,11 @@ else
     mkdir -p /dev/net
     mknod /dev/net/tun c 10 200
     exitOnError $?
-    chmod 0666 /dev/net/tun
+    # 0600, matching what Docker itself creates with --device. The OpenVPN config
+    # carries no user/group directive, so openvpn stays root and opens this fine;
+    # 0666 let anything in the container - qBittorrent included - read and write
+    # the tunnel device.
+    chmod 0600 /dev/net/tun
     printf "DONE\n"
   fi
 
@@ -967,7 +971,8 @@ else
   # against the bundled PIA CA using --connect-to, exactly as the WireGuard path
   # does. The CN is only used for hostname matching: the trust anchor is still the
   # bundled CA, so a certificate not signed by PIA is still rejected.
-  pf_ip=$(route -n | grep UG | grep tun0 | tr -s ' ' | cut -d' ' -f2 | head -1)
+  # $VPN_DEVICE, not a hardcoded tun0, so this cannot drift from pf_repin().
+  pf_ip=$(route -n | grep UG | grep "$VPN_DEVICE" | tr -s ' ' | cut -d' ' -f2 | head -1)
   PF_GATEWAY="$pf_ip"
   # The certificate probe is only needed for port forwarding, so it is deferred to
   # pf_setup_openvpn_tls below rather than run on every start. tunnel_alive() does
@@ -1140,18 +1145,23 @@ fi
 # Environment: a subprocess inherits only EXPORTED variables, and doas scrubs the
 # environment outright, so the values hooks actually use are passed explicitly.
 # Sourcing used to expose all of them; this keeps documented hooks working.
-hook_env="PF_PORT=$PF_PORT WEBUI_PORT=$WEBUI_PORT VPN_DEVICE=$VPN_DEVICE PIA_REGION=$PIA_REGION VPN_CLIENT=$VPN_CLIENT PUID=$PUID PGID=$PGID"
+# Passed as separate quoted assignments, NOT as one string: PIA_REGION is
+# user-supplied and may legitimately contain a space ("CA Montreal" resolves the
+# same as ca_montreal). Word-splitting one string made env treat "Montreal" as the
+# command to run, so the hook did not run at all - exit 127, silently.
 
 if [ -f /app/post-vpn-connect.sh ]; then
   printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Running /app/post-vpn-connect.sh (as root)\n"
-  # shellcheck disable=SC2086
-  env $hook_env sh /app/post-vpn-connect.sh
+  env PF_PORT="$PF_PORT" WEBUI_PORT="$WEBUI_PORT" VPN_DEVICE="$VPN_DEVICE" \
+      PIA_REGION="$PIA_REGION" VPN_CLIENT="$VPN_CLIENT" PUID="$PUID" PGID="$PGID" \
+      sh /app/post-vpn-connect.sh
 fi
 
 if [ -f /config/post-vpn-connect.sh ]; then
   printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Running post-vpn-connect.sh (as qbtUser)\n"
-  # shellcheck disable=SC2086
-  doas -u qbtUser env $hook_env sh /config/post-vpn-connect.sh
+  doas -u qbtUser env PF_PORT="$PF_PORT" WEBUI_PORT="$WEBUI_PORT" VPN_DEVICE="$VPN_DEVICE" \
+      PIA_REGION="$PIA_REGION" VPN_CLIENT="$VPN_CLIENT" PUID="$PUID" PGID="$PGID" \
+      sh /config/post-vpn-connect.sh
 fi
 # Checks the VPN tunnel is actually alive, independent of PORT_FORWARDING -
 # this is what catches a tunnel that stays "up" (interface present) but has
@@ -1168,10 +1178,13 @@ tunnel_alive() {
   if [ "$VPN_CLIENT" = "wireguard" ]; then
     # WireGuard exposes handshake freshness locally, no network call needed,
     # and it is available regardless of region/PF support. PersistentKeepalive
-    # is 25s, so a healthy tunnel's handshake should never be much older.
-    # NOTE: healthcheck.sh implements the same check with a larger 180s threshold
-    # (it gets no retry). Keep the two in step if either changes.
-    # than that; allow generous slack for jitter.
+    # is 25s, so a healthy tunnel's handshake should never be much older than
+    # that; allow generous slack for jitter.
+    # NOTE: healthcheck.sh implements the same check with a larger threshold (180s
+    # vs 150s here). The values differ deliberately: this runs inside the 10-minute
+    # monitoring loop and a failure triggers a reconnect, whereas healthcheck.sh
+    # runs every minute and Docker retries it 3 times before marking the container
+    # unhealthy. Keep both in step if either changes.
     hs=$(wg show pia latest-handshakes 2>/dev/null | awk 'NR==1{print $2}')
     [ -z "$hs" ] && return 1
     [ "$hs" -gt 0 ] 2>/dev/null || return 1
@@ -1266,11 +1279,21 @@ pf_repin() {
     PF_CONNECT="--connect-to $wg_cn::$wg_ip:"
     return 0
   fi
-  pf_ip=$(route -n | grep UG | grep "$VPN_DEVICE" | tr -s ' ' | cut -d' ' -f2 | head -1)
-  [ -z "$pf_ip" ] && return 1
-  PF_GATEWAY="$pf_ip"
-  PF_CONNECT=""
-  pf_setup_openvpn_tls
+  # Commit nothing until the whole re-pin succeeds. Writing PF_GATEWAY and
+  # PF_CONNECT before the certificate probe left a half-written pin on failure:
+  # PF_GATEWAY became the raw gateway IP and PF_CONNECT was cleared, while
+  # PF_CERT still held --cacert from startup. Every later request was then an
+  # IP-addressed URL verified against a CA whose certificate names a hostname,
+  # which can never match - curl exit 60, permanently, until a restart.
+  new_ip=$(route -n | grep UG | grep "$VPN_DEVICE" | tr -s ' ' | cut -d' ' -f2 | head -1)
+  [ -z "$new_ip" ] && return 1
+  new_cn=$(curl -sv -k --connect-timeout 5 --max-time 10 "https://$new_ip:19999/" 2>&1 | grep -oE 'CN=[A-Za-z0-9_.-]+' | head -1 | cut -d= -f2)
+  [ -z "$new_cn" ] && return 1
+  pf_ip="$new_ip"
+  PF_GATEWAY="$new_cn"
+  PF_CONNECT="--connect-to $new_cn::$new_ip:"
+  PF_CERT="--cacert /app/ca.rsa.4096.crt"
+  return 0
 }
 
 reconnect_vpn() {
@@ -1321,7 +1344,16 @@ reconnect_vpn() {
 
   if is_enabled "$PORT_FORWARDING"; then
     # Point at whichever server we actually came back on before rebinding.
-    pf_repin || return 1
+    # A failure here is a port-forwarding problem, NOT a dead tunnel: tunnel_alive
+    # confirmed the tunnel is up immediately above. Returning 1 would count a
+    # healthy tunnel toward the 6x restart escalation - the very shape this
+    # function exists to remove. Startup takes the same stance, skipping port
+    # forwarding rather than failing. The pin is left untouched, so the next
+    # cycle retries it.
+    if ! pf_repin; then
+      printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Reconnected, but could not re-pin the port-forward gateway - port forwarding will be retried next cycle\n"
+      return 0
+    fi
     binding=$(curl --connect-timeout 8 --max-time 15 -sG $PF_CONNECT $PF_CERT --data-urlencode "payload=$payload" --data-urlencode "signature=$signature" https://$PF_GATEWAY:19999/bindPort)
     if [ "$(echo "$binding" | jq -r '.status')" != "OK" ] && [ -n "$piaToken" ]; then
       # A signature is issued by a specific gateway; after a failover the new one
@@ -1335,14 +1367,17 @@ reconnect_vpn() {
         new_port=$(echo "$payload" | base64 -d | jq -r '.port' 2>/dev/null)
         if [ -n "$new_port" ] && [ "$new_port" != "null" ] && [ "$new_port" != "$PF_PORT" ]; then
           printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] PIA issued a new forwarded port after failover: $new_port (was $PF_PORT)\n"
-          printf "          The firewall and qBittorrent.conf are updated, but qBittorrent is already running and keeps\n"
-          printf "          listening on $PF_PORT until it restarts - incoming connections stay closed until then.\n"
+          printf "          The firewall now allows $new_port, but the RUNNING qBittorrent keeps listening on $PF_PORT,\n"
+          printf "          so incoming connections stay closed until the container is restarted.\n"
           iptables -D INPUT -i $VPN_DEVICE -p tcp --dport $PF_PORT -j ACCEPT 2>/dev/null
           iptables -D INPUT -i $VPN_DEVICE -p udp --dport $PF_PORT -j ACCEPT 2>/dev/null
           PF_PORT="$new_port"
           iptables -A INPUT -i $VPN_DEVICE -p tcp --dport $PF_PORT -j ACCEPT
           iptables -A INPUT -i $VPN_DEVICE -p udp --dport $PF_PORT -j ACCEPT
-          sed -i "s/Session\\\Port=[0-9]*/Session\\\Port=$PF_PORT/g" /config/qBittorrent/config/qBittorrent.conf
+          # Deliberately NOT written to qBittorrent.conf: qBittorrent keeps its
+          # preferences in memory and rewrites that file when it saves, so the edit
+          # is reverted (measured: 59999 written, 42940 on disk after the save).
+          # The next start requests a fresh port and rewrites it regardless.
         fi
         binding=$(curl --connect-timeout 8 --max-time 15 -sG $PF_CONNECT $PF_CERT --data-urlencode "payload=$payload" --data-urlencode "signature=$signature" https://$PF_GATEWAY:19999/bindPort)
       fi
