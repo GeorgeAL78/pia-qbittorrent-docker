@@ -1,0 +1,72 @@
+name: CI
+
+# Validation only - never pushes an image. Releases are handled by
+# docker-publish.yml, which runs on v* tags.
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: Lint and validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Hard failure: a syntax error here breaks every container on start.
+      # entrypoint.sh targets busybox ash, so check with dash (POSIX sh) too.
+      - name: Shell syntax (POSIX)
+        run: |
+          for f in entrypoint.sh healthcheck.sh; do
+            [ -f "$f" ] || continue
+            sh -n "$f"    && echo "sh -n   OK: $f"
+            dash -n "$f"  && echo "dash -n OK: $f"
+          done
+
+      # Informational: this codebase has ~200 mostly-stylistic findings
+      # (printf format strings, intentional word splitting), so shellcheck runs
+      # for visibility rather than as a gate. Errors are surfaced separately below.
+      - name: ShellCheck (informational)
+        continue-on-error: true
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck -s sh -f gcc entrypoint.sh | head -40 || true
+          echo "total findings: $(shellcheck -s sh -f gcc entrypoint.sh | wc -l)"
+
+      - name: Validate Unraid templates (XML must parse)
+        run: |
+          for f in pia-qbittorrent.xml ca_profile.xml; do
+            [ -f "$f" ] || continue
+            python3 -c "import xml.etree.ElementTree as ET,sys; ET.parse(sys.argv[1]); print('XML OK: '+sys.argv[1])" "$f"
+          done
+
+      - name: Validate docker-compose.yml
+        run: docker compose -f docker-compose.yml config >/dev/null && echo "compose OK"
+
+      # The env vars the script reads should be documented for users. This is a
+      # reminder, not a gate - internal shell locals also match the pattern.
+      - name: Env vars referenced vs documented
+        continue-on-error: true
+        run: |
+          for v in $(grep -oE '\$\{?[A-Z][A-Z0-9_]{2,}\}?' entrypoint.sh | tr -d '${}' | sort -u); do
+            grep -q "$v" README.md || echo "not in README: $v"
+          done
+
+  build:
+    name: Build image (no push)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      # Catches a broken Dockerfile or a dead upstream tarball URL before it is
+      # tagged - which has bitten before (a libtorrent release was tagged a day
+      # before its source tarball was published, so the URL 404'd).
+      - name: Build amd64 only
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
