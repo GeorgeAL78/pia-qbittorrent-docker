@@ -93,10 +93,10 @@ printf " ============== qBittorrent ==============\n"
 printf " =================== + ===================\n"
 printf " ============= PIA CONTAINER =============\n"
 printf " =========================================\n"
-printf " OS: $(cat /etc/os-release | ack PRETTY_NAME=\"*\" | cut -d "\"" -f 2 | cut -d "\"" -f 1)\n"
+printf " OS: $(grep PRETTY_NAME= /etc/os-release | cut -d "\"" -f 2 | cut -d "\"" -f 1)\n"
 printf " =========================================\n"
-printf " OpenVPN version: $(openvpn --version | head -n 1 | ack "OpenVPN [0-9\.]* " | cut -d" " -f2)\n"
-printf " Wireguard version: $(wg --version | head -n 1 | ack " v[0-9\.]* " | cut -d" " -f2)\n"
+printf " OpenVPN version: $(openvpn --version | head -n 1 | grep -E "OpenVPN [0-9.]* " | cut -d" " -f2)\n"
+printf " Wireguard version: $(wg --version | head -n 1 | grep -E " v[0-9.]* " | cut -d" " -f2)\n"
 printf " Iptables version: $IPTABLE_VERSION\n"
 printf " Container version: ${CONTAINER_VERSION:-unknown}\n"
 printf " qBittorrent version: $(qbittorrent-nox --version | cut -d" " -f2)\n"
@@ -489,7 +489,7 @@ else
   # Reading chosen OpenVPN configuration
   ############################################
   printf " * Reading OpenVPN configuration...\n"
-  CONNECTIONSTRING=$(ack 'privacy.network' "/openvpn/nextgen/$ovpn_profile.ovpn")
+  CONNECTIONSTRING=$(grep 'privacy.network' "/openvpn/nextgen/$ovpn_profile.ovpn")
   exitOnError $?
   PORT=$(echo $CONNECTIONSTRING | cut -d' ' -f3)
   if [ "$PORT" = "" ]; then
@@ -561,15 +561,15 @@ fi
 ############################################
 printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Finding network properties...\n"
 printf " * Detecting default gateway..."
-DEFAULT_GATEWAY=$(ip r | ack 'default via' | cut -d" " -f 3)
+DEFAULT_GATEWAY=$(ip r | grep 'default via' | cut -d" " -f 3)
 exitOnError $?
 printf "$DEFAULT_GATEWAY\n"
 printf " * Detecting local interface..."
-INTERFACE=$(ip r | ack 'default via' | cut -d" " -f 5)
+INTERFACE=$(ip r | grep 'default via' | cut -d" " -f 5)
 exitOnError $?
 printf "$INTERFACE\n"
 printf " * Detecting local subnet..."
-SUBNET=$(ip r | ack -v 'default via' | ack $INTERFACE | tail -n 1 | cut -d" " -f 1)
+SUBNET=$(ip r | grep -v 'default via' | grep "$INTERFACE" | tail -n 1 | cut -d" " -f 1)
 exitOnError $?
 printf "$SUBNET\n"
 for EXTRASUBNET in $(echo $EXTRA_SUBNETS | sed "s/,/ /g")
@@ -583,7 +583,7 @@ printf " * Detecting target VPN interface..."
 if [ "$VPN_CLIENT" = "wireguard" ]; then
   VPN_DEVICE="pia"
 else
-  VPN_DEVICE=$(cat $TARGET_PATH/config.ovpn | ack 'dev ' | cut -d" " -f 2)0
+  VPN_DEVICE=$(cat $TARGET_PATH/config.ovpn | grep 'dev ' | cut -d" " -f 2)0
 fi
 exitOnError $?
 printf "$VPN_DEVICE\n"
@@ -755,11 +755,11 @@ if [ -n "$OPEN_ADDITIONAL_LOCAL_PORTS" ]; then
 fi
 
 printf " * Creating VPN routes..."
-ip rule add from $(ip route get 1 | ack -o '(?<=src )(\S+)') table 128
+ip rule add from $(ip route get 1 | sed -n 's/.*src \([^ ]*\).*/\1/p') table 128
 #if [ "$VPN_CLIENT" = "wireguard" ]; then
 #fi
-ip route add table 128 to $(ip route get 1 | ack -o '(?<=src )(\S+)')/32 dev $(ip -4 route ls | ack default | ack -o '(?<=dev )(\S+)')
-ip route add table 128 default via $(ip -4 route ls | ack default | ack -o '(?<=via )(\S+)')
+ip route add table 128 to $(ip route get 1 | sed -n 's/.*src \([^ ]*\).*/\1/p')/32 dev $(ip -4 route ls | grep default | sed -n 's/.*dev \([^ ]*\).*/\1/p')
+ip route add table 128 default via $(ip -4 route ls | grep default | sed -n 's/.*via \([^ ]*\).*/\1/p')
 printf "DONE\n"
 
 printf " * Creating VPN rules\n"
@@ -898,7 +898,7 @@ while : ; do
 	  hs=$(wg show pia latest-handshakes 2>/dev/null | awk 'NR==1{print $2}')
 	  if [ -n "$hs" ] && [ "$hs" -gt 0 ] 2>/dev/null; then tunnelstat="up"; else tunnelstat=""; fi
 	else
-	  tunnelstat=$(ifconfig | ack "tun|tap")
+	  tunnelstat=$(ifconfig | grep -E "tun|tap")
 	fi
 	if [ ! -z "${tunnelstat}" ]; then
 		break
