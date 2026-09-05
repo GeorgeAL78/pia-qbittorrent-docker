@@ -185,7 +185,7 @@ fi
 ############################################
 # CHECK if VPN_CLIENT should be openvpn or wireguard
 ############################################
-if [ -z $VPN_CLIENT ]; then
+if [ -z "$VPN_CLIENT" ]; then
   printf "Defaulting to OpenVPN\n"
   VPN_CLIENT="openvpn"
 fi
@@ -208,7 +208,7 @@ if [ "$VPN_CLIENT" = "openvpn" ]; then
     exit 1
   fi
 fi
-if [ -z $WEBUI_PORT ]; then
+if [ -z "$WEBUI_PORT" ]; then
   WEBUI_PORT=8888
 fi
 # Validate WEBUI_PORT. The previous check was:
@@ -231,7 +231,7 @@ elif [ "$WEBUI_PORT" -gt 65535 ]; then
   printf "WEBUI_PORT cannot be a port higher than the maximum port 65535\n"
   exit 1
 fi
-if [ -z $VPN_LOG_DIR ]; then
+if [ -z "$VPN_LOG_DIR" ]; then
   VPN_LOG_DIR=/logs
 fi
 # Unconditional: VPN_LOG_DIR is user-overridable, and leaving this unset would pass
@@ -721,7 +721,7 @@ exitOnError $?
 printf "DONE\n"
 
 # Set the default WebUI interface
-if [ -z $WEBUI_INTERFACES ]; then
+if [ -z "$WEBUI_INTERFACES" ]; then
   WEBUI_INTERFACES=$INTERFACE
 fi
 
@@ -816,6 +816,20 @@ done
 ############################################
 printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Connecting to VPN\n"
 
+# The OpenVPN log is a control input, not just output: the port-forward CN is read
+# from it, and startup aborts on "ERROR:"/"fatal error" lines found there. /config is
+# chowned to qbtUser below, so a log directory underneath it would let a compromised
+# qBittorrent inject a "Peer Connection Initiated" line that tail -1 prefers, or an
+# "ERROR:" line that blocks the next start. Default /logs is root-owned; refuse the
+# overrides that are not.
+case "$VPN_LOG_DIR" in
+  /config|/config/*)
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] VPN_LOG_DIR cannot be under /config: that directory is owned by the\n"
+    printf "          container user, and the VPN log is used to decide the port-forward hostname and\n"
+    printf "          whether startup should abort. Use the default (/logs) or a path outside /config.\n"
+    exit 1
+    ;;
+esac
 mkdir -p "$VPN_LOG_DIR"
 cd "$TARGET_PATH"
 
@@ -967,20 +981,15 @@ if [ "$VPN_CLIENT" = "wireguard" ]; then
   PF_CERT="--cacert /app/ca.rsa.4096.crt"
   PF_CONNECT="--connect-to $wg_cn::$wg_ip:"
 else
-  # The OpenVPN port-forward endpoint is the tunnel gateway. Its certificate IS
-  # issued by PIA's CA, but carries the server hostname (e.g. montreal434), so a
-  # request addressed to the gateway IP fails hostname validation - which is why
-  # this previously fell back to -k and verified nothing at all. Read the CN from
-  # the certificate the gateway presents, then make the real requests verified
-  # against the bundled PIA CA using --connect-to, exactly as the WireGuard path
-  # does. The CN is only used for hostname matching: the trust anchor is still the
-  # bundled CA, so a certificate not signed by PIA is still rejected.
-  # $VPN_DEVICE, not a hardcoded tun0, so this cannot drift from pf_repin().
-  pf_ip=$(route -n | grep UG | grep "$VPN_DEVICE" | tr -s ' ' | cut -d' ' -f2 | head -1)
-  PF_GATEWAY="$pf_ip"
-  # The certificate probe is only needed for port forwarding, so it is deferred to
-  # pf_setup_openvpn_tls below rather than run on every start. tunnel_alive() does
-  # NOT need it: its OpenVPN branch only checks the process and interface.
+  # Nothing to resolve here for OpenVPN. The port-forward endpoint is the tunnel
+  # gateway, and pf_setup_openvpn_tls() derives it, authenticates the hostname and
+  # commits the pin as one atomic step - called only when port forwarding is
+  # actually in use. Deriving it a second time in this block is what let the
+  # startup and reconnect paths drift apart before.
+  #
+  # tunnel_alive() does not need it either: its OpenVPN branch checks the process,
+  # the interface and the --status file, none of which involve the gateway.
+  :
 fi
 
 # Resolve TLS parameters for the OpenVPN port-forward endpoint. Called only when
@@ -1007,16 +1016,27 @@ openvpn_verified_cn() {
     tail -1 | sed -n 's/.*\[\([A-Za-z0-9_.-]*\)\] Peer Connection Initiated.*/\1/p'
 }
 
+# Computes into locals and commits PF_GATEWAY/PF_CONNECT/PF_CERT only on full
+# success, so a failed probe cannot leave a half-written pin. pf_repin() calls this
+# rather than duplicating it: reconnect is the ONLY path where the server can
+# actually have changed, so it is the path that most needs the authenticated name.
+# An earlier version inlined the probe here to get atomicity and forked the logic.
 pf_setup_openvpn_tls() {
   [ "$VPN_CLIENT" = "wireguard" ] && return 0
+  new_ip=$(route -n | grep UG | grep "$VPN_DEVICE" | tr -s ' ' | cut -d' ' -f2 | head -1)
+  [ -z "$new_ip" ] && return 1
   pf_cn=$(openvpn_verified_cn)
   if [ -n "$pf_cn" ]; then
-    # Cross-check against the certificate the port-forward endpoint presents. The
-    # authenticated name comes from the tunnel handshake; this confirms the PF
-    # endpoint is that same host rather than merely some host holding a PIA
-    # certificate. A mismatch means the two disagree about who we are talking to,
-    # so refuse port forwarding rather than guess.
-    probe_cn=$(curl -sv -k --connect-timeout 5 --max-time 10 "https://$pf_ip:19999/" 2>&1 | grep -oE 'CN=[A-Za-z0-9_.-]+' | head -1 | cut -d= -f2)
+    # Cross-check against the certificate the port-forward endpoint presents. This
+    # is a CONSISTENCY check, not a security boundary: the probe runs with -k, so
+    # anyone able to intercept the endpoint could present a self-signed certificate
+    # carrying the same CN (a hostname is not a secret) and pass this comparison.
+    # What actually provides security is that PF_GATEWAY is now a name OpenVPN
+    # authenticated against PIA's CA, so the --cacert validation on the real
+    # requests is anchored to the server we established the tunnel with rather than
+    # to whatever name the endpoint claimed for itself. The cross-check earns its
+    # place by catching a misconfigured or unexpected endpoint.
+    probe_cn=$(curl -sv -k --connect-timeout 5 --max-time 10 "https://$new_ip:19999/" 2>&1 | grep -oE 'CN=[A-Za-z0-9_.-]+' | head -1 | cut -d= -f2)
     if [ -n "$probe_cn" ] && [ "$probe_cn" != "$pf_cn" ]; then
       printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Port-forward endpoint identifies as '$probe_cn' but the tunnel authenticated '$pf_cn' - skipping port forwarding\n"
       return 1
@@ -1025,11 +1045,11 @@ pf_setup_openvpn_tls() {
     # No authenticated name available (log rotated, or format changed). Fall back
     # to the presented certificate, which is still verified against PIA's CA via
     # --cacert below; only the hostname binding is weaker.
-    pf_cn=$(curl -sv -k --connect-timeout 5 --max-time 10 "https://$pf_ip:19999/" 2>&1 | grep -oE 'CN=[A-Za-z0-9_.-]+' | head -1 | cut -d= -f2)
+    pf_cn=$(curl -sv -k --connect-timeout 5 --max-time 10 "https://$new_ip:19999/" 2>&1 | grep -oE 'CN=[A-Za-z0-9_.-]+' | head -1 | cut -d= -f2)
   fi
   if [ -n "$pf_cn" ]; then
     PF_GATEWAY="$pf_cn"
-    PF_CONNECT="--connect-to $pf_cn::$pf_ip:"
+    PF_CONNECT="--connect-to $pf_cn::$new_ip:"
     PF_CERT="--cacert /app/ca.rsa.4096.crt"
     return 0
   fi
@@ -1321,21 +1341,12 @@ pf_repin() {
     PF_CONNECT="--connect-to $wg_cn::$wg_ip:"
     return 0
   fi
-  # Commit nothing until the whole re-pin succeeds. Writing PF_GATEWAY and
-  # PF_CONNECT before the certificate probe left a half-written pin on failure:
-  # PF_GATEWAY became the raw gateway IP and PF_CONNECT was cleared, while
-  # PF_CERT still held --cacert from startup. Every later request was then an
-  # IP-addressed URL verified against a CA whose certificate names a hostname,
-  # which can never match - curl exit 60, permanently, until a restart.
-  new_ip=$(route -n | grep UG | grep "$VPN_DEVICE" | tr -s ' ' | cut -d' ' -f2 | head -1)
-  [ -z "$new_ip" ] && return 1
-  new_cn=$(curl -sv -k --connect-timeout 5 --max-time 10 "https://$new_ip:19999/" 2>&1 | grep -oE 'CN=[A-Za-z0-9_.-]+' | head -1 | cut -d= -f2)
-  [ -z "$new_cn" ] && return 1
-  pf_ip="$new_ip"
-  PF_GATEWAY="$new_cn"
-  PF_CONNECT="--connect-to $new_cn::$new_ip:"
-  PF_CERT="--cacert /app/ca.rsa.4096.crt"
-  return 0
+  # One implementation, shared with startup: re-reads the gateway from the route
+  # table, takes the CN from OpenVPN's authenticated handshake, cross-checks the
+  # endpoint, and commits nothing unless all of that succeeds. openvpn_verified_cn
+  # uses tail -1, so after a reconnect it returns the CN of the server we are NOW
+  # connected to, which is exactly what this path needs.
+  pf_setup_openvpn_tls
 }
 
 reconnect_vpn() {
@@ -1396,8 +1407,24 @@ reconnect_vpn() {
       printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Reconnected, but could not re-pin the port-forward gateway - port forwarding will be retried next cycle\n"
       return 0
     fi
-    binding=$(curl --connect-timeout 8 --max-time 15 -sG $PF_CONNECT $PF_CERT --data-urlencode "payload=$payload" --data-urlencode "signature=$signature" https://$PF_GATEWAY:19999/bindPort)
-    if [ "$(echo "$binding" | jq -r '.status')" != "OK" ] && [ -n "$piaToken" ]; then
+    # Retry the bind itself before concluding anything is wrong with the signature:
+    # the pin is valid and the payload unexpired, so a failure here is far more
+    # likely to be a blip than a rejection.
+    bind_try=0
+    while [ $bind_try -lt 3 ]; do
+      bind_try=$((bind_try + 1))
+      binding=$(curl --connect-timeout 8 --max-time 15 -sG $PF_CONNECT $PF_CERT --data-urlencode "payload=$payload" --data-urlencode "signature=$signature" https://$PF_GATEWAY:19999/bindPort)
+      [ "$(echo "$binding" | jq -r '.status' 2>/dev/null)" = "OK" ] && break
+      [ $bind_try -lt 3 ] && sleep 4
+    done
+    # Only reach for a new signature on an EXPLICIT, parseable rejection. Testing
+    # merely for "not OK" made this reachable by every transient failure - a curl
+    # timeout, a refused connection or a 5xx all leave $binding empty or non-JSON,
+    # jq prints nothing, and "" != "OK" is true. Combined with a fresh signature
+    # always carrying a different port, that turned one blip into a container
+    # restart and a lost forwarded port. An unparseable or empty body is treated as
+    # transient: leave the pin alone and let the next cycle retry.
+    if [ "$(echo "$binding" | jq -r '.status' 2>/dev/null)" = "ERROR" ] && [ -n "$piaToken" ]; then
       # NOT for failover: measured that a signature issued by server A is accepted
       # by server B once we are connected through B ("port scheduled for add"), so
       # re-pinning alone covers a failover. The earlier "Unauthorized client" was

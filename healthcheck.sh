@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # Check the VPN interface exists
-if ! ifconfig | grep -q 'tun0\|pia'; then
+if ! ifconfig | grep -qE 'tun[0-9]|tap[0-9]|pia'; then
     echo "No VPN interface found" >&2
     exit 1
 fi
@@ -26,12 +26,23 @@ if ifconfig | grep -q 'pia'; then
     fi
 fi
 
-# For OpenVPN, confirm the client is actually still running. There is no
-# equivalent built-in freshness signal without a management socket.
-if ifconfig | grep -q 'tun0'; then
+# For OpenVPN, the interface and the process both persist when the client wedges,
+# so neither proves the tunnel is alive. openvpn is started with --status, which
+# rewrites a local file every 10s; a stale file means wedged. Local read, no network.
+# Threshold matches the WireGuard branch above (180s) because this check gets the
+# same retry budget from Docker; entrypoint.sh uses 150s in its monitoring loop,
+# which retries on a different schedule. Keep all three in step if any changes.
+if ifconfig | grep -qE 'tun[0-9]|tap[0-9]'; then
     if ! pgrep -x openvpn > /dev/null 2>&1; then
-        echo "tun0 exists but the openvpn process is gone" >&2
+        echo "VPN interface exists but the openvpn process is gone" >&2
         exit 1
+    fi
+    if [ -f /run/openvpn.status ]; then
+        AGE=$(( $(date +%s) - $(stat -c %Y /run/openvpn.status 2>/dev/null || echo 0) ))
+        if [ "$AGE" -ge 180 ]; then
+            echo "openvpn is running but its status file is ${AGE}s stale - wedged" >&2
+            exit 1
+        fi
     fi
 fi
 

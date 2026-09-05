@@ -469,6 +469,26 @@ docker build -t gjergjk/pia-qbittorrent .
 
 ---
 
+## Exit Codes
+
+The container exits with these codes. Codes **5** and **7** expect a restart policy
+(`--restart unless-stopped`); without one the container stays stopped. Existing
+containers can be updated in place with `docker update --restart unless-stopped <name>`.
+
+| Code | Meaning | Needs a restart policy |
+|------|---------|------------------------|
+| `0` | Normal shutdown | - |
+| `1` | Invalid configuration (bad `WEBUI_PORT`, unresolvable `PIA_REGION`, `VPN_LOG_DIR` under `/config`, IPv6 cannot be blocked) | No - fix the setting |
+| `3` | PIA credentials missing or rejected while fetching a token | No - fix `/auth.conf` |
+| `5` | Deliberate restart to recover something that cannot be fixed in place: an expired PIA token (after 6 failed in-place reconnects), or a changed forwarded port that a running qBittorrent cannot be moved to | **Yes** |
+| `6` | OpenVPN reported a fatal error in its log | No |
+| `7` | VPN authentication failed | No - check credentials |
+
+Before exiting with `5` the container stops qBittorrent gracefully so resume data is
+saved and torrents do not re-check on the next start.
+
+---
+
 ## Changelog
 
 See [Docker Hub](https://hub.docker.com/r/gjergjk/pia-qbittorrent) for full changelog.
