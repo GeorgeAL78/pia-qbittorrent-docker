@@ -57,8 +57,9 @@ The title-bar version comes from an `X-Docker-Version` response header this imag
 - PIA port forwarding for seeding
 - PIA server list fetched directly from PIA at build time — every image ships with the current region list
 - Kill switch — all IPv4 and IPv6 traffic blocked if the VPN drops
+- Docker healthcheck that catches a tunnel which is *up but dead* — not just "is the interface there". WireGuard is judged on handshake freshness, OpenVPN on whether its client is still writing its status file, so a wedged or silently-stalled tunnel shows as `unhealthy` in `docker ps` instead of looking fine while torrents hang
 - Auto-healing VPN — detects a dead/dropped tunnel and reconnects in place (WireGuard re-registers its key, OpenVPN restarts the client and re-authenticates), escalating to a full container restart if the in-place reconnect can't recover it
-- Automatic server failover — if the VPN server you're on goes down, reconnect tries the other servers in your region instead of retrying a dead one
+- Automatic server failover — if the VPN server you're on goes down, reconnect tries the other servers in your region instead of retrying a dead one, and port forwarding follows it to the new server rather than silently pointing at the old one
 - Multi-arch images — `amd64` and `arm64`
 - VPN network interface auto-detected and locked (WireGuard `pia` / OpenVPN `tun0`)
 - Configurable UID/GID for correct file ownership on Unraid and NAS systems
@@ -67,7 +68,7 @@ The title-bar version comes from an `X-Docker-Version` response header this imag
 - Graceful shutdown — saves resume data so torrents resume instead of re-checking after an update
 - Secure credential storage via `auth.conf`
 - DNS leak protection with custom DNS servers
-- Hook script support after the VPN connects
+- Hook script support after the VPN connects — `/config/post-vpn-connect.sh` runs as the container user; bake a hook into the image at `/app/post-vpn-connect.sh` if it genuinely needs root
 - Web UI accessible on your local network
 
 ---
