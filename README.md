@@ -53,6 +53,18 @@ The title-bar version comes from an `X-Docker-Version` response header this imag
 
 ## Features
 
+- **Your real IP stays hidden** - if the VPN drops, the container loses its internet instead of quietly falling back to your normal connection
+- **It fixes itself** - it notices when the VPN has stopped working - including when it still looks connected - and repairs it without you doing anything
+- **A dead VPN server is not your problem** - it moves to another server nearby, and your forwarded port moves with it
+- **Faster seeding** - PIA port forwarding is set up for you, wherever your region supports it
+- **Downloads survive updates** - it saves your progress on shutdown, so nothing re-checks after a restart
+- **Files land with the right owner** - so they are readable on Unraid and other NAS systems without fixing permissions afterwards
+- **Your PIA login can stay out of the container settings** - keep it in a protected file instead
+- **Runs on a Raspberry Pi** - as well as a normal PC or server
+
+<details>
+<summary><b>Technical details</b></summary>
+
 - WireGuard and OpenVPN support
 - PIA port forwarding for seeding
 - PIA server list fetched directly from PIA at build time — every image ships with the current region list
@@ -70,6 +82,8 @@ The title-bar version comes from an `X-Docker-Version` response header this imag
 - DNS leak protection with custom DNS servers
 - Hook script support after the VPN connects — `/config/post-vpn-connect.sh` runs as the container user; bake a hook into the image at `/app/post-vpn-connect.sh` if it genuinely needs root
 - Web UI accessible on your local network
+
+</details>
 
 ---
 
