@@ -1,0 +1,73 @@
+name: Refresh PIA server list
+
+# The committed data.json is the last-resort fallback: the entrypoint fetches PIA's
+# list at startup, the Dockerfile fetches it at build, and this file is only used when
+# both of those fail. It still should not be stale - when it was last left alone for
+# 2.5 months, 111 of 166 regions had different WireGuard server IPs, and the kill
+# switch is built from those addresses.
+#
+# Automated rather than left to a release checklist, because "remember to update it"
+# is precisely the step that gets skipped.
+on:
+  schedule:
+    # Weekly, Monday 04:17 UTC. Off the hour so it does not pile onto GitHub's
+    # busiest scheduling minute.
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-serverlist
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    name: Fetch and commit if changed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fetch PIA's current server list
+        run: |
+          set -eu
+          # Same endpoint and same validation the Dockerfile and entrypoint use.
+          curl -sSL --max-time 30 --retry 3 \
+            https://serverlist.piaservers.net/vpninfo/servers/v6 | head -n 1 > fresh.json
+          if ! jq -e '.regions | length > 0' fresh.json >/dev/null 2>&1; then
+            echo "PIA returned nothing usable - leaving data.json alone"
+            rm -f fresh.json
+            exit 0
+          fi
+          echo "regions: $(jq -r '.regions | length' fresh.json)"
+          echo "pf:      $(jq -r '[.regions[] | select(.port_forward)] | length' fresh.json)"
+
+      - name: Commit only if it actually changed
+        run: |
+          set -eu
+          [ -f fresh.json ] || exit 0
+          if cmp -s fresh.json data.json; then
+            echo "unchanged - nothing to commit"
+            rm -f fresh.json
+            exit 0
+          fi
+          # Report the churn that matters: server addresses feed the kill switch.
+          changed=$(jq -n --slurpfile o data.json --slurpfile n fresh.json '
+            ($o[0].regions | map({key: .id, value: [.servers.wg[]?.ip] | sort}) | from_entries) as $a |
+            ($n[0].regions | map({key: .id, value: [.servers.wg[]?.ip] | sort}) | from_entries) as $b |
+            [$a | keys[] | select($b[.] and ($a[.] != $b[.]))] | length')
+          echo "regions with changed WireGuard IPs: $changed"
+          mv fresh.json data.json
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data.json
+          git commit -m "Refresh bundled data.json fallback to PIA's current server list
+
+          Automated weekly refresh. This file is the last-resort fallback - the
+          entrypoint fetches PIA's list at startup and the Dockerfile at build time -
+          but the kill switch is built from these addresses, so a stale copy is the
+          wrong thing to ship.
+
+          regions with changed WireGuard server IPs: $changed"
+          git push
