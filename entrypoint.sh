@@ -1672,6 +1672,7 @@ vpn_fail_count=0
 pf_soft_fail=0
 tunnel_state=up          # last observed state, for transition logging
 tunnel_down_since=0      # epoch seconds when it went down
+tunnel_down_samples=0    # consecutive 30s samples seen down, before forcing recovery
 while : ; do
 	sleep 1
 
@@ -1684,28 +1685,46 @@ while : ; do
         down_for=$(( $(date +%s) - tunnel_down_since ))
         printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Tunnel recovered (was down ~${down_for}s)\n"
         tunnel_state=up
+        tunnel_down_samples=0
       fi
     else
       if [ "$tunnel_state" = "up" ]; then
         tunnel_down_since=$(date +%s)
         printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Tunnel went down\n"
         tunnel_state=down
-        # Don't sit on it until the next 10-minute tick. Measured in production:
-        # down at 14:48:24, reconnect at 14:52:55 - 271s of a dead tunnel that was
-        # already detected 30s in. With port forwarding ON it is worse, because a
-        # dead tunnel is only inferred from two consecutive pf_bind transients,
-        # roughly 20 minutes.
+        tunnel_down_samples=1
+      else
+        tunnel_down_samples=$((tunnel_down_samples + 1))
+        # Force the recovery block once the tunnel has been down for TWO
+        # consecutive samples (~30-60s), not on the first one.
         #
-        # Forcing the counter is deliberate rather than calling reconnect_vpn()
-        # here: the block below is the ONLY place that decides how to recover,
-        # classifies the bind, counts failures toward exit 5 and relaunches
-        # qBittorrent. Duplicating any of that is the mistake this codebase has
-        # made four times. i is reset to 1 by that block.
+        # Waiting for the 10-minute tick was the original bug: measured in
+        # production, down at 14:48:24 and reconnect at 14:52:55 - 271s of a
+        # tunnel that had already been detected. With port forwarding ON it was
+        # worse, roughly 20 minutes, since a dead tunnel was only inferred from
+        # two consecutive pf_bind transients.
         #
-        # Fires once per down transition, not every 30s, so a tunnel that stays
+        # But firing on the FIRST sample was too eager, and a v5.2.3-19 log shows
+        # why: "Tunnel went down" at 13:40:56, "Tunnel recovered (was down ~30s)"
+        # at 13:41:26 - WireGuard healed it unaided. Reconnecting there would have
+        # torn down a tunnel that was about to come back, re-registered a key with
+        # PIA, and restarted qBittorrent via qbt_relaunch, all for nothing. One
+        # confirmation sample keeps the ~10x improvement over 600s while leaving
+        # room for that self-heal.
+        #
+        # Forcing the counter rather than calling reconnect_vpn() from here is
+        # deliberate: the block below is the ONLY place that decides how to
+        # recover, classifies the bind, counts failures toward exit 5 and
+        # relaunches qBittorrent. Duplicating any of that is the mistake this
+        # codebase has made four times. i is reset to 1 by that block.
+        #
+        # -eq (not -ge) so it fires exactly once per outage: a tunnel that stays
         # down falls back to the normal 10-minute cadence instead of hammering
-        # PIA - and a failed attempt still increments vpn_fail_count.
-        i=601
+        # PIA, and a failed attempt still increments vpn_fail_count.
+        if [ "$tunnel_down_samples" -eq 2 ]; then
+          printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Tunnel still down on a second check - reconnecting now rather than waiting for the next cycle\n"
+          i=601
+        fi
       fi
     fi
   fi
