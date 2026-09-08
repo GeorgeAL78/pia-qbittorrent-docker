@@ -71,6 +71,7 @@ The title-bar version comes from an `X-Docker-Version` response header this imag
 - Kill switch — all IPv4 and IPv6 traffic blocked if the VPN drops
 - Docker healthcheck that catches a tunnel which is *up but dead* — not just "is the interface there". WireGuard is judged on handshake freshness, OpenVPN on whether its client is still writing its status file, so a wedged or silently-stalled tunnel shows as `unhealthy` in `docker ps` instead of looking fine while torrents hang
 - Auto-healing VPN — detects a dead/dropped tunnel and reconnects in place (WireGuard re-registers its key, OpenVPN restarts the client and re-authenticates), escalating to a full container restart if the in-place reconnect can't recover it
+- qBittorrent is relaunched after a successful reconnect — PIA issues a new tunnel address on every reconnect, and qBittorrent binds to the address it saw at startup, so without this it keeps trying the old one and ends up with no BitTorrent connectivity on a healthy tunnel. Resume data is saved first, so torrents do not re-check; the Web UI is briefly unavailable while it restarts. The container itself keeps running and the kill switch is never lowered
 - Automatic server failover — if the VPN server you're on goes down, reconnect tries the other servers in your region instead of retrying a dead one, and port forwarding follows it to the new server rather than silently pointing at the old one
 - Multi-arch images — `amd64` and `arm64`
 - VPN network interface auto-detected and locked (WireGuard `pia` / OpenVPN `tun0`)
@@ -485,6 +486,11 @@ docker build -t gjergjk/pia-qbittorrent .
 ---
 
 ## Known Issues
+
+- **Downloads stopped after the VPN reconnected** *(fixed in 5.2.3-19)*
+  - Affected anyone who had saved preferences in the Web UI, which records the tunnel address at that moment instead of following the interface. After a reconnect or server failover the address changes, and qBittorrent kept binding the old one
+  - The tunnel stays healthy and nothing in the Web UI indicates a problem; transfers simply stop. `qbittorrent.log` shows `Failed to listen on IP ... Address not available`
+  - **Fix**: update to 5.2.3-19 or later. On an older version, `docker restart <container>` restores it immediately
 
 - **Banned client error on some trackers**
   - Some private trackers may not have whitelisted the current qBittorrent version yet
