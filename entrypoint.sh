@@ -141,6 +141,44 @@ if [ -n "$REGION" ]; then
   unset -v REGION
 fi
 
+# Refresh PIA's server list before anything reads it.
+#
+# The list is baked in at image build time, so a running container is frozen at
+# whatever PIA published the day its image was built - and it is only rebuilt when a
+# release is cut. That matters because VPNIPS, and therefore the kill switch, is
+# built from this file: if PIA moves a region onto new servers, an older image cannot
+# connect to them AND cannot discover them, because the firewall only ever permits
+# the addresses it knew at build time. Observed live: the v5.2.3-20 image listed a
+# single Massachusetts server which was not answering, while v5.2.3-21, built an hour
+# later, listed two that were.
+#
+# Leak-safe by placement, not by luck: this runs in the same pre-firewall window the
+# PIA token fetch already uses, well before the kill switch is built further down. It
+# adds no exposure that startup does not already have. Do NOT move it below the
+# firewall - the kill switch has no rule for serverlist.piaservers.net, so it would
+# simply be dropped.
+#
+# Timeouts are deliberately tighter than the Dockerfile's (--max-time 30 --retry 3):
+# this is a boot path, and a slow PIA must not hold the container down. On any
+# failure - timeout, DNS, garbage body, partial JSON - the baked-in copy is kept and
+# startup continues exactly as before.
+printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Refreshing PIA server list..."
+pia_list_tmp=$(mktemp 2>/dev/null || echo /tmp/.pia_servers.json)
+if curl -sSL --max-time 8 --retry 1 https://serverlist.piaservers.net/vpninfo/servers/v6 2>/dev/null \
+     | head -n 1 > "$pia_list_tmp" 2>/dev/null &&
+   jq -e '.regions | length > 0' "$pia_list_tmp" >/dev/null 2>&1; then
+  # Only replace once the body is known to parse AND to contain regions, so a
+  # truncated or error response can never leave the container without region data.
+  if cat "$pia_list_tmp" > /app/data.json 2>/dev/null; then
+    printf "DONE (%s regions)\n" "$(jq -r '.regions | length' /app/data.json 2>/dev/null)"
+  else
+    printf "SKIPPED (image is read-only) - using the list baked in at build time\n"
+  fi
+else
+  printf "UNAVAILABLE - using the list baked in at build time\n"
+fi
+rm -f "$pia_list_tmp" 2>/dev/null
+
 # convert vpn to lower case for dir
 server=$(echo "$PIA_REGION" | tr '[:upper:]' '[:lower:]')
 
