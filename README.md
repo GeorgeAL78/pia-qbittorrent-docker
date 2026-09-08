@@ -68,11 +68,11 @@ The title-bar version comes from an `X-Docker-Version` response header this imag
 
 - WireGuard and OpenVPN support
 - PIA port forwarding for seeding
-- PIA server list refreshed **at every container start** as well as at image build time. This matters more than it sounds: the kill switch is built from these addresses, so a container running an older list can neither reach PIA's newer servers nor discover them. If PIA is unreachable at startup the bundled copy is used and the container starts normally
+- PIA server list refreshed at every container start, falling back to the bundled copy if PIA is unreachable
 - Kill switch — all IPv4 and IPv6 traffic blocked if the VPN drops
-- Docker healthcheck that catches a tunnel which is *up but dead* — not just "is the interface there". WireGuard is judged on handshake freshness, OpenVPN on whether its client is still writing its status file, so a wedged or silently-stalled tunnel shows as `unhealthy` in `docker ps` instead of looking fine while torrents hang
+- Docker healthcheck catches a tunnel that is up but dead, not just a missing interface — it reports `unhealthy` rather than looking fine while torrents hang
 - Auto-healing VPN — detects a dead/dropped tunnel and reconnects in place (WireGuard re-registers its key, OpenVPN restarts the client and re-authenticates), escalating to a full container restart if the in-place reconnect can't recover it
-- qBittorrent is relaunched after a successful reconnect — PIA issues a new tunnel address on every reconnect, and qBittorrent binds to the address it saw at startup, so without this it keeps trying the old one and ends up with no BitTorrent connectivity on a healthy tunnel. Resume data is saved first, so torrents do not re-check; the Web UI is briefly unavailable while it restarts. The container itself keeps running and the kill switch is never lowered
+- qBittorrent is relaunched after a successful reconnect, so it binds the new tunnel address. Resume data is saved first
 - Automatic server failover — if the VPN server you're on goes down, reconnect tries the other servers in your region instead of retrying a dead one, and port forwarding follows it to the new server rather than silently pointing at the old one
 - Multi-arch images — `amd64` and `arm64`
 - VPN network interface auto-detected and locked (WireGuard `pia` / OpenVPN `tun0`)
@@ -148,9 +148,9 @@ docker run -d --init --name=pia-qbittorrent --restart unless-stopped \
 | `OPEN_ADDITIONAL_LOCAL_PORTS` | | Comma-separated extra LAN ports to open, e.g. `8989,7878`. For containers sharing this container's network (`network_mode: container:...`) whose web UIs would otherwise be blocked by the kill switch |
 | `DNS_SERVERS` | `9.9.9.9,149.112.112.112` | Comma-separated DNS servers |
 | `LEGACY_IPTABLES` | `false` | Use legacy iptables instead of nftables |
-| `VPN_LOG_DIR` | `/logs` | Where the VPN client writes its log. Must be root-owned: the port-forward hostname is read from this log and startup aborts on errors found in it, so a directory the container user can write is refused. A path under `/config` (or any world-writable directory) is **ignored with a warning and `/logs` is used instead** |
+| `VPN_LOG_DIR` | `/logs` | Where the VPN client writes its log. Must be root-owned — a path under `/config`, or any world-writable directory, is ignored with a warning and `/logs` used instead |
 | `TZ` | | Timezone e.g. `America/New_York` |
-| `HOSTHEADERVALIDATION` | | Set to `false` if having trouble accessing the WebUI. Note that the bundled config sets `WebUI\ServerDomains=*` so the container is reachable by any IP or hostname — which means host header validation accepts everything and this setting has no practical effect. **CSRF protection is what actually guards the Web UI.** To make it meaningful, set `WebUI\ServerDomains` to your own hostname in `/config/qBittorrent/config/qBittorrent.conf` |
+| `HOSTHEADERVALIDATION` | | Set to `false` if having trouble accessing the WebUI. Has no practical effect unless you also set `WebUI\ServerDomains` to your own hostname — CSRF protection is what guards the Web UI |
 | `CSRFPROTECTION` | | Set to `false` if having trouble accessing the WebUI |
 
 ---
@@ -221,158 +221,213 @@ Common regions **with port forwarding**:
 | `japan` | JP Tokyo |
 | `aus` | AU Sydney |
 
-> ℹ️ **Most PIA regions support port forwarding, but not all.** The regions listed above are confirmed to support it. To use a different region with `PORT_FORWARDING=true`, see the full list of port-forwarding regions below.
+> ℹ️ **135 of 190 regions support port forwarding; no US region does.** The table below says which. Ignore the `-pf` in a region id — 32 ids end in `-pf` without supporting it.
 
-### All port-forwarding regions
+### All PIA regions
 
 <details>
-<summary><h3>🌍 &nbsp;Click to view all 135 port-forwarding regions</h3></summary>
+<summary><h3>🌍 &nbsp;Click to view all 190 PIA regions</h3></summary>
 
-| Location | `PIA_REGION` |
-|----------|--------------|
-| AR Streaming Optimized | `ar-so` |
-| AT Streaming Optimized | `at-so` |
-| AU Adelaide | `au_adelaide-pf` |
-| AU Brisbane | `au_brisbane-pf` |
-| AU Melbourne | `aus_melbourne` |
-| AU Perth | `aus_perth` |
-| AU Sydney | `aus` |
-| Albania | `al` |
-| Algeria *(geo)* | `dz` |
-| Andorra *(geo)* | `ad` |
-| Argentina | `ar` |
-| Armenia *(geo)* | `yerevan` |
-| Australia Streaming Optimized | `au_australia-so` |
-| Austria | `austria` |
-| BE Streaming Optimized | `be-so` |
-| BR Streaming Optimized | `br-so` |
-| Bahamas | `bahamas` |
-| Bangladesh | `bangladesh` |
-| Belgium | `belgium` |
-| Bolivia | `bo_bolivia-pf` |
-| Bosnia and Herzegovina *(geo)* | `ba` |
-| Brazil | `br` |
-| Bulgaria | `sofia` |
-| CA Montreal | `ca` |
-| CA Ontario | `ca_ontario` |
-| CA Ontario Streaming Optimized | `ca_ontario-so` |
-| CA Toronto | `ca_toronto` |
-| CA Vancouver | `ca_vancouver` |
-| CH Streaming Optimized | `ch-so` |
-| CL Streaming Optimized | `cl-so` |
-| Cambodia *(geo)* | `cambodia` |
-| Chile | `santiago` |
-| China *(geo)* | `china` |
-| Colombia | `bogota` |
-| Costa Rica | `sanjose` |
-| Croatia | `zagreb` |
-| Cyprus *(geo)* | `cyprus` |
-| Czech Republic | `czech` |
-| DE Berlin | `de_berlin` |
-| DE Frankfurt | `de-frankfurt` |
-| DE Germany Streaming Optimized | `de_germany-so` |
-| DK Streaming Optimized | `denmark_2` |
-| Denmark | `denmark` |
-| ES Madrid | `spain` |
-| ES Streaming Optimized | `es-so` |
-| ES Valencia | `es-valencia` |
-| Ecuador | `ec_ecuador-pf` |
-| Egypt *(geo)* | `egypt` |
-| Estonia | `ee` |
-| FI Helsinki | `fi` |
-| FI Streaming Optimized | `fi_2` |
-| FR Streaming Optimized | `fr-so` |
-| France | `france` |
-| Georgia *(geo)* | `georgia` |
-| Greece | `gr` |
-| Greenland | `greenland` |
-| Guatemala | `gt_guatemala-pf` |
-| HU Streaming Optimized | `hu-so` |
-| Hong Kong *(geo)* | `hk` |
-| Hungary | `hungary` |
-| IL Israel 2 | `il_israel_2-pf` |
-| IL Streaming Optimized | `il-so` |
-| IT Milano | `italy` |
-| IT Streaming Optimized *(geo)* | `italy_2` |
-| Iceland | `is` |
-| India | `in` |
-| Indonesia *(geo)* | `jakarta` |
-| Ireland | `ireland` |
-| Isle of Man *(geo)* | `man` |
-| Israel | `israel` |
-| JP Streaming Optimized | `japan_2` |
-| JP Tokyo | `japan` |
-| KR Streaming Optimized | `kr-so` |
-| Kazakhstan | `kazakhstan` |
-| LT Streaming Optimized | `lt-so` |
-| LU Streaming Optimized | `lu-so` |
-| Latvia | `lv` |
-| Liechtenstein *(geo)* | `liechtenstein` |
-| Lithuania | `lt` |
-| Luxembourg | `lu` |
-| MX Streaming Optimized | `mx-so` |
-| Macao *(geo)* | `macau` |
-| Malaysia | `kualalumpur` |
-| Malta *(geo)* | `malta` |
-| Mexico | `mexico` |
-| Moldova | `md` |
-| Monaco *(geo)* | `monaco` |
-| Mongolia *(geo)* | `mongolia` |
-| Montenegro *(geo)* | `montenegro` |
-| Morocco *(geo)* | `morocco` |
-| NL Netherlands Streaming Optimized | `nl_netherlands-so` |
-| NZ Streaming Optimized | `nz-so` |
-| Nepal *(geo)* | `np_nepal-pf` |
-| Netherlands | `nl_amsterdam` |
-| New Zealand | `nz` |
-| Nigeria *(geo)* | `nigeria` |
-| North Macedonia | `mk` |
-| Norway | `no` |
-| PL Streaming Optimized | `pl-so` |
-| PT Streaming Optimized | `pt-so` |
-| Panama | `panama` |
-| Peru | `pe_peru-pf` |
-| Philippines | `philippines` |
-| Poland | `poland` |
-| Portugal | `pt` |
-| Qatar *(geo)* | `qatar` |
-| RO Streaming Optimized | `ro-so` |
-| RS Streaming Optimized | `rs-so` |
-| Romania | `ro` |
-| SE Stockholm | `sweden` |
-| SE Streaming Optimized | `sweden_2` |
-| SG Streaming Optimized | `sg-so` |
-| SK Streaming Optimized | `sk-so` |
-| Saudi Arabia *(geo)* | `saudiarabia` |
-| Serbia | `rs` |
-| Singapore | `sg` |
-| Slovakia | `sk` |
-| Slovenia | `slovenia` |
-| South Africa | `za` |
-| South Korea | `kr_south_korea-pf` |
-| Sri Lanka *(geo)* | `srilanka` |
-| Switzerland | `swiss` |
-| TW Streaming Optimized | `tw-so` |
-| Taiwan | `taiwan` |
-| Turkey *(geo)* | `tr` |
-| UK London | `uk` |
-| UK Manchester | `uk_manchester` |
-| UK Southampton | `uk_southampton` |
-| UK Streaming Optimized | `uk_2` |
-| Ukraine | `ua` |
-| United Arab Emirates | `ae` |
-| Uruguay | `uy_uruguay-pf` |
-| Venezuela | `venezuela` |
-| Vietnam | `vietnam` |
-| ZA Streaming Optimized | `za-so` |
+| Location | `PIA_REGION` | Port forwarding |
+|----------|--------------|-----------------|
+| AR Streaming Optimized | `ar-so` | Yes |
+| AT Streaming Optimized | `at-so` | Yes |
+| AU Adelaide | `au_adelaide-pf` | Yes |
+| AU Brisbane | `au_brisbane-pf` | Yes |
+| AU Melbourne | `aus_melbourne` | Yes |
+| AU Perth | `aus_perth` | Yes |
+| AU Sydney | `aus` | Yes |
+| Albania | `al` | Yes |
+| Algeria *(geo)* | `dz` | Yes |
+| Andorra *(geo)* | `ad` | Yes |
+| Argentina | `ar` | Yes |
+| Armenia *(geo)* | `yerevan` | Yes |
+| Australia Streaming Optimized | `au_australia-so` | Yes |
+| Austria | `austria` | Yes |
+| BE Streaming Optimized | `be-so` | Yes |
+| BR Streaming Optimized | `br-so` | Yes |
+| Bahamas | `bahamas` | Yes |
+| Bangladesh *(geo)* | `bangladesh` | Yes |
+| Belgium | `belgium` | Yes |
+| Bolivia | `bo_bolivia-pf` | Yes |
+| Bosnia and Herzegovina *(geo)* | `ba` | Yes |
+| Brazil | `br` | Yes |
+| Bulgaria | `sofia` | Yes |
+| CA Montreal | `ca` | Yes |
+| CA Ontario | `ca_ontario` | Yes |
+| CA Ontario Streaming Optimized | `ca_ontario-so` | Yes |
+| CA Toronto | `ca_toronto` | Yes |
+| CA Vancouver | `ca_vancouver` | Yes |
+| CH Streaming Optimized | `ch-so` | Yes |
+| CL Streaming Optimized | `cl-so` | Yes |
+| Cambodia *(geo)* | `cambodia` | Yes |
+| Chile | `santiago` | Yes |
+| China *(geo)* | `china` | Yes |
+| Colombia | `bogota` | Yes |
+| Costa Rica | `sanjose` | Yes |
+| Croatia | `zagreb` | Yes |
+| Cyprus *(geo)* | `cyprus` | Yes |
+| Czech Republic | `czech` | Yes |
+| DE Berlin | `de_berlin` | Yes |
+| DE Frankfurt | `de-frankfurt` | Yes |
+| DE Germany Streaming Optimized | `de_germany-so` | Yes |
+| DK Streaming Optimized | `denmark_2` | Yes |
+| Denmark | `denmark` | Yes |
+| ES Madrid | `spain` | Yes |
+| ES Streaming Optimized | `es-so` | Yes |
+| ES Valencia | `es-valencia` | Yes |
+| Ecuador | `ec_ecuador-pf` | Yes |
+| Egypt *(geo)* | `egypt` | Yes |
+| Estonia | `ee` | Yes |
+| FI Helsinki | `fi` | Yes |
+| FI Streaming Optimized | `fi_2` | Yes |
+| FR Streaming Optimized | `fr-so` | Yes |
+| France | `france` | Yes |
+| Georgia *(geo)* | `georgia` | Yes |
+| Greece | `gr` | Yes |
+| Greenland | `greenland` | Yes |
+| Guatemala | `gt_guatemala-pf` | Yes |
+| HU Streaming Optimized | `hu-so` | Yes |
+| Hong Kong *(geo)* | `hk` | Yes |
+| Hungary | `hungary` | Yes |
+| IL Israel 2 | `il_israel_2-pf` | Yes |
+| IL Streaming Optimized | `il-so` | Yes |
+| IT Milano | `italy` | Yes |
+| IT Streaming Optimized *(geo)* | `italy_2` | Yes |
+| Iceland | `is` | Yes |
+| India | `in` | Yes |
+| Indonesia *(geo)* | `jakarta` | Yes |
+| Ireland | `ireland` | Yes |
+| Isle of Man *(geo)* | `man` | Yes |
+| Israel | `israel` | Yes |
+| JP Streaming Optimized | `japan_2` | Yes |
+| JP Tokyo | `japan` | Yes |
+| KR Streaming Optimized | `kr-so` | Yes |
+| Kazakhstan | `kazakhstan` | Yes |
+| LT Streaming Optimized | `lt-so` | Yes |
+| LU Streaming Optimized | `lu-so` | Yes |
+| Latvia | `lv` | Yes |
+| Liechtenstein *(geo)* | `liechtenstein` | Yes |
+| Lithuania | `lt` | Yes |
+| Luxembourg | `lu` | Yes |
+| MX Streaming Optimized | `mx-so` | Yes |
+| Macao *(geo)* | `macau` | Yes |
+| Malaysia | `kualalumpur` | Yes |
+| Malta *(geo)* | `malta` | Yes |
+| Mexico | `mexico` | Yes |
+| Moldova | `md` | Yes |
+| Monaco *(geo)* | `monaco` | Yes |
+| Mongolia *(geo)* | `mongolia` | Yes |
+| Montenegro *(geo)* | `montenegro` | Yes |
+| Morocco *(geo)* | `morocco` | Yes |
+| NL Netherlands Streaming Optimized | `nl_netherlands-so` | Yes |
+| NZ Streaming Optimized | `nz-so` | Yes |
+| Nepal *(geo)* | `np_nepal-pf` | Yes |
+| Netherlands | `nl_amsterdam` | Yes |
+| New Zealand | `nz` | Yes |
+| Nigeria *(geo)* | `nigeria` | Yes |
+| North Macedonia | `mk` | Yes |
+| Norway | `no` | Yes |
+| PL Streaming Optimized | `pl-so` | Yes |
+| PT Streaming Optimized | `pt-so` | Yes |
+| Panama | `panama` | Yes |
+| Peru | `pe_peru-pf` | Yes |
+| Philippines | `philippines` | Yes |
+| Poland | `poland` | Yes |
+| Portugal | `pt` | Yes |
+| Qatar *(geo)* | `qatar` | Yes |
+| RO Streaming Optimized | `ro-so` | Yes |
+| RS Streaming Optimized | `rs-so` | Yes |
+| Romania | `ro` | Yes |
+| SE Stockholm | `sweden` | Yes |
+| SE Streaming Optimized | `sweden_2` | Yes |
+| SG Streaming Optimized | `sg-so` | Yes |
+| SK Streaming Optimized | `sk-so` | Yes |
+| Saudi Arabia *(geo)* | `saudiarabia` | Yes |
+| Serbia | `rs` | Yes |
+| Singapore | `sg` | Yes |
+| Slovakia | `sk` | Yes |
+| Slovenia | `slovenia` | Yes |
+| South Africa | `za` | Yes |
+| South Korea | `kr_south_korea-pf` | Yes |
+| Sri Lanka *(geo)* | `srilanka` | Yes |
+| Switzerland | `swiss` | Yes |
+| TW Streaming Optimized | `tw-so` | Yes |
+| Taiwan | `taiwan` | Yes |
+| Turkey *(geo)* | `tr` | Yes |
+| UK London | `uk` | Yes |
+| UK Manchester | `uk_manchester` | Yes |
+| UK Southampton | `uk_southampton` | Yes |
+| UK Streaming Optimized | `uk_2` | Yes |
+| US Alabama *(geo)* | `us_alabama-pf` | No |
+| US Alaska *(geo)* | `us_alaska-pf` | No |
+| US Arkansas *(geo)* | `us_arkansas-pf` | No |
+| US Atlanta | `us_atlanta` | No |
+| US Baltimore *(geo)* | `us-baltimore` | No |
+| US California | `us_california` | No |
+| US Chicago | `us_chicago` | No |
+| US Connecticut *(geo)* | `us_connecticut-pf` | No |
+| US Denver | `us_denver` | No |
+| US East | `us-newjersey` | No |
+| US East Streaming Optimized | `us-streaming` | No |
+| US Florida | `us_florida` | No |
+| US Honolulu *(geo)* | `us-honolulu` | No |
+| US Houston | `us_houston` | No |
+| US Idaho *(geo)* | `us_idaho-pf` | No |
+| US Indiana *(geo)* | `us-indiana` | No |
+| US Iowa *(geo)* | `us_iowa-pf` | No |
+| US Kansas *(geo)* | `us_kansas-pf` | No |
+| US Kentucky *(geo)* | `us-kentucky` | No |
+| US Las Vegas | `us_las_vegas` | No |
+| US Louisiana *(geo)* | `us_louisiana-pf` | No |
+| US Maine *(geo)* | `us_maine-pf` | No |
+| US Massachusetts | `us_massachusetts-pf` | No |
+| US Michigan *(geo)* | `us_michigan-pf` | No |
+| US Minnesota *(geo)* | `us_minnesota-pf` | No |
+| US Mississippi *(geo)* | `us_mississippi-pf` | No |
+| US Missouri *(geo)* | `us_missouri-pf` | No |
+| US Montana *(geo)* | `us_montana-pf` | No |
+| US Nebraska *(geo)* | `us_nebraska-pf` | No |
+| US New Hampshire *(geo)* | `us_new_hampshire-pf` | No |
+| US New Mexico | `us_new_mexico-pf` | No |
+| US New York | `us_new_york_city` | No |
+| US North Carolina *(geo)* | `us_north_carolina-pf` | No |
+| US North Dakota *(geo)* | `us_north_dakota-pf` | No |
+| US Ohio *(geo)* | `us_ohio-pf` | No |
+| US Oklahoma *(geo)* | `us_oklahoma-pf` | No |
+| US Oregon *(geo)* | `us_oregon-pf` | No |
+| US Pennsylvania *(geo)* | `us_pennsylvania-pf` | No |
+| US Rhode Island *(geo)* | `us_rhode_island-pf` | No |
+| US Salt Lake City | `us-salt-lake-city` | No |
+| US Seattle | `us_seattle` | No |
+| US Silicon Valley | `us_silicon_valley` | No |
+| US South Carolina *(geo)* | `us_south_carolina-pf` | No |
+| US South Dakota | `us_south_dakota-pf` | No |
+| US Tennessee *(geo)* | `us-tennessee` | No |
+| US Texas | `us_south_west` | No |
+| US Vermont *(geo)* | `us_vermont-pf` | No |
+| US Virginia *(geo)* | `us_virginia-pf` | No |
+| US Washington DC | `us_washington_dc` | No |
+| US West | `us3` | No |
+| US West Streaming Optimized | `us-streaming-2` | No |
+| US West Virginia *(geo)* | `us_west_virginia-pf` | No |
+| US Wilmington *(geo)* | `us-wilmington` | No |
+| US Wisconsin *(geo)* | `us_wisconsin-pf` | No |
+| US Wyoming | `us_wyoming-pf` | No |
+| Ukraine | `ua` | Yes |
+| United Arab Emirates | `ae` | Yes |
+| Uruguay | `uy_uruguay-pf` | Yes |
+| Venezuela | `venezuela` | Yes |
+| Vietnam *(geo)* | `vietnam` | Yes |
+| ZA Streaming Optimized | `za-so` | Yes |
 
 </details>
 
-This list comes directly from PIA. The bundled `data.json` is refreshed when the image is built **and again every time the container starts**, so a running container tracks PIA's current servers rather than the ones that existed on build day — PIA rotates them faster than releases happen (measured: 33 of 190 regions changed server addresses within four minutes). The table below is hand-maintained and will lag; the container's own list does not. To regenerate the readable list yourself:
+The container refreshes this list from PIA on every start, so it is never limited to the table below. To regenerate the table yourself:
 
 ```bash
 curl -s https://serverlist.piaservers.net/vpninfo/servers/v6 | head -1 | \
-  jq -r '.regions[] | select(.port_forward) | "\(.name) — \(.id)"' | sort
+  jq -r '.regions[] | "\(.name) — \(.id) — pf=\(.port_forward)"' | sort
 ```
 
 ---
@@ -432,7 +487,7 @@ When `/auth.conf` is present, `PIA_USERNAME` and `PIA_PASSWORD` are ignored.
 
 Create `/config/post-vpn-connect.sh` to run custom code after the VPN connects but before qBittorrent starts.
 
-It runs as `qbtUser`, not as root. `/config` is writable by that user, so anything placed there is only as trustworthy as the user account itself - running it as root would let a compromised qBittorrent escalate to root inside the container. A hook that genuinely needs root must be baked into the image at `/app/post-vpn-connect.sh`, which the container user cannot write.
+It runs as `qbtUser`, not root. A hook that needs root must be baked into the image at `/app/post-vpn-connect.sh`, which the container user cannot write.
 
 Available variables:
 
@@ -488,28 +543,15 @@ docker build -t gjergjk/pia-qbittorrent .
 
 ## Reading the startup log
 
-The first line the container prints reports whether it could refresh PIA's server list:
+The first line reports whether the PIA server list could be refreshed:
 
 | Line | Meaning |
 |------|---------|
-| `...DOWNLOADED 190 regions from PIA` | Fetched PIA's current list |
-| `...PIA UNREACHABLE - using the 190 regions baked into this image` | PIA could not be reached; using the bundled copy |
-| `...FAILED to write the file - using the 190 regions baked into this image` | Fetch worked, but the file could not be written |
+| `DOWNLOADED 190 regions from PIA` | Got PIA's current list |
+| `PIA UNREACHABLE - using the 190 regions baked into this image` | Using the bundled copy |
+| `FAILED to write the file - using the 190 regions baked into this image` | Using the bundled copy |
 
-Each line says what actually happened, so you do not need to know the other two to read
-it. All three are `[INFO]`, not errors — the
-container works either way; the only difference is whether it knows about servers PIA has
-added since the image was built.
-
-To check on an already-running container, compare the file's timestamp against when the
-container started:
-
-```bash
-docker exec <container> date -u -r /app/data.json +%Y-%m-%dT%H:%M:%S
-```
-
-Close to the container's start time means it downloaded; equal to the image build date
-means it fell back.
+All three are normal — the container works either way.
 
 ---
 
