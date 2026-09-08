@@ -694,7 +694,11 @@ printf "   * Block all IPv6 traffic..."
 # OpenVPN container whose ip6tables was unavailable had IPv6 neither firewalled nor
 # disabled, while the log claimed otherwise. Now the fallback really runs, and if
 # IPv6 cannot be blocked at all we fail closed rather than leak.
-if ip6tables -F 2>/dev/null && ip6tables -P INPUT DROP 2>/dev/null && ip6tables -P OUTPUT DROP 2>/dev/null && ip6tables -P FORWARD DROP 2>/dev/null; then
+# Policies BEFORE the flush, for the same reason as IPv4 above: flushing first
+# leaves an empty table with the default ACCEPT policy still in force. v5.2.3-18
+# fixed that for IPv4 and did not mirror it here - the same one-of-two-places miss
+# this file keeps making.
+if ip6tables -P INPUT DROP 2>/dev/null && ip6tables -P OUTPUT DROP 2>/dev/null && ip6tables -P FORWARD DROP 2>/dev/null && ip6tables -F 2>/dev/null; then
   printf "DONE\n"
 elif [ ! -f /proc/net/if_inet6 ]; then
   printf "DONE (no IPv6 stack present)\n"
@@ -1671,9 +1675,9 @@ tunnel_down_since=0      # epoch seconds when it went down
 while : ; do
 	sleep 1
 
-  # Sample tunnel health every 30s and log only the transitions, so brief
-  # outages (e.g. a modem reboot) that WireGuard heals by itself still leave
-  # a trail. Logging only - the 10-min block below owns recovery.
+  # Sample tunnel health every 30s. Transitions are logged so brief outages
+  # (e.g. a modem reboot) that WireGuard heals by itself still leave a trail,
+  # and a NEW failure additionally jumps the queue - see below.
   if [ $((i % 30)) -eq 0 ]; then
     if tunnel_alive; then
       if [ "$tunnel_state" = "down" ]; then
@@ -1686,6 +1690,22 @@ while : ; do
         tunnel_down_since=$(date +%s)
         printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Tunnel went down\n"
         tunnel_state=down
+        # Don't sit on it until the next 10-minute tick. Measured in production:
+        # down at 14:48:24, reconnect at 14:52:55 - 271s of a dead tunnel that was
+        # already detected 30s in. With port forwarding ON it is worse, because a
+        # dead tunnel is only inferred from two consecutive pf_bind transients,
+        # roughly 20 minutes.
+        #
+        # Forcing the counter is deliberate rather than calling reconnect_vpn()
+        # here: the block below is the ONLY place that decides how to recover,
+        # classifies the bind, counts failures toward exit 5 and relaunches
+        # qBittorrent. Duplicating any of that is the mistake this codebase has
+        # made four times. i is reset to 1 by that block.
+        #
+        # Fires once per down transition, not every 30s, so a tunnel that stays
+        # down falls back to the normal 10-minute cadence instead of hammering
+        # PIA - and a failed attempt still increments vpn_fail_count.
+        i=601
       fi
     fi
   fi
