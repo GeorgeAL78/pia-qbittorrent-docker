@@ -170,12 +170,12 @@ if curl -sSL --max-time 8 --retry 1 https://serverlist.piaservers.net/vpninfo/se
   # Only replace once the body is known to parse AND to contain regions, so a
   # truncated or error response can never leave the container without region data.
   if cat "$pia_list_tmp" > /app/data.json 2>/dev/null; then
-    printf "DONE (%s regions)\n" "$(jq -r '.regions | length' /app/data.json 2>/dev/null)"
+    printf "DOWNLOADED %s regions from PIA\n" "$(jq -r '.regions | length' /app/data.json 2>/dev/null)"
   else
-    printf "SKIPPED (image is read-only) - using the list baked in at build time\n"
+    printf "FAILED to write the file - using the %s regions baked into this image\n" "$(jq -r '.regions | length' /app/data.json 2>/dev/null)"
   fi
 else
-  printf "UNAVAILABLE - using the list baked in at build time\n"
+  printf "PIA UNREACHABLE - using the %s regions baked into this image\n" "$(jq -r '.regions | length' /app/data.json 2>/dev/null)"
 fi
 rm -f "$pia_list_tmp" 2>/dev/null
 

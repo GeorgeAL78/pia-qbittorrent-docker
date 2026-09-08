@@ -11,7 +11,7 @@
   <Overview>qBittorrent 5.2.3 combined with Private Internet Access (PIA) VPN, built on Alpine Linux for a minimal footprint.&#13;&#10;&#13;&#10;Features:
 • Your real IP stays hidden - if the VPN drops, the container loses its internet
 • It fixes itself - spots a VPN that has stopped working, even if it still looks connected
-• A dead PIA server is not your problem - it moves to another one nearby, and your forwarded port moves with it
+• A dead PIA server is not your problem - it moves to another one nearby, and your forwarded port moves with it&#13;&#10;• Keeps up with PIA - the server list refreshes on every container start, so it still works when PIA moves a region
 • Faster seeding - PIA port forwarding is set up for you, where your region supports it
 • Downloads survive updates - progress is saved on shutdown, so nothing re-checks
 • Files land with the right owner, so they are readable on Unraid without fixing permissions

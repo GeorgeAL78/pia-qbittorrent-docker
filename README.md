@@ -56,6 +56,7 @@ The title-bar version comes from an `X-Docker-Version` response header this imag
 - **Your real IP stays hidden** - if the VPN drops, the container loses its internet instead of quietly falling back to your normal connection
 - **It fixes itself** - it notices when the VPN has stopped working - including when it still looks connected - and repairs it without you doing anything
 - **A dead VPN server is not your problem** - it moves to another server nearby, and your forwarded port moves with it
+- **It keeps up with PIA** - the list of PIA servers is refreshed every time the container starts, so it still works when PIA moves a region onto new machines
 - **Faster seeding** - PIA port forwarding is set up for you, wherever your region supports it
 - **Downloads survive updates** - it saves your progress on shutdown, so nothing re-checks after a restart
 - **Files land with the right owner** - so they are readable on Unraid and other NAS systems without fixing permissions afterwards
@@ -67,7 +68,7 @@ The title-bar version comes from an `X-Docker-Version` response header this imag
 
 - WireGuard and OpenVPN support
 - PIA port forwarding for seeding
-- PIA server list fetched directly from PIA at build time — every image ships with the current region list
+- PIA server list refreshed **at every container start** as well as at image build time. This matters more than it sounds: the kill switch is built from these addresses, so a container running an older list can neither reach PIA's newer servers nor discover them. If PIA is unreachable at startup the bundled copy is used and the container starts normally
 - Kill switch — all IPv4 and IPv6 traffic blocked if the VPN drops
 - Docker healthcheck that catches a tunnel which is *up but dead* — not just "is the interface there". WireGuard is judged on handshake freshness, OpenVPN on whether its client is still writing its status file, so a wedged or silently-stalled tunnel shows as `unhealthy` in `docker ps` instead of looking fine while torrents hang
 - Auto-healing VPN — detects a dead/dropped tunnel and reconnects in place (WireGuard re-registers its key, OpenVPN restarts the client and re-authenticates), escalating to a full container restart if the in-place reconnect can't recover it
@@ -367,7 +368,7 @@ Common regions **with port forwarding**:
 
 </details>
 
-This list comes directly from PIA and is refreshed into the image at build time, so the bundled `data.json` always matches PIA's current servers. To regenerate the readable list yourself:
+This list comes directly from PIA. The bundled `data.json` is refreshed when the image is built **and again every time the container starts**, so a running container tracks PIA's current servers rather than the ones that existed on build day — PIA rotates them faster than releases happen (measured: 33 of 190 regions changed server addresses within four minutes). The table below is hand-maintained and will lag; the container's own list does not. To regenerate the readable list yourself:
 
 ```bash
 curl -s https://serverlist.piaservers.net/vpninfo/servers/v6 | head -1 | \
@@ -482,6 +483,33 @@ git clone https://github.com/GeorgeAL78/pia-qbittorrent-docker.git
 cd pia-qbittorrent-docker
 docker build -t gjergjk/pia-qbittorrent .
 ```
+
+---
+
+## Reading the startup log
+
+The first line the container prints reports whether it could refresh PIA's server list:
+
+| Line | Meaning |
+|------|---------|
+| `...DOWNLOADED 190 regions from PIA` | Fetched PIA's current list |
+| `...PIA UNREACHABLE - using the 190 regions baked into this image` | PIA could not be reached; using the bundled copy |
+| `...FAILED to write the file - using the 190 regions baked into this image` | Fetch worked, but the file could not be written |
+
+Each line says what actually happened, so you do not need to know the other two to read
+it. All three are `[INFO]`, not errors — the
+container works either way; the only difference is whether it knows about servers PIA has
+added since the image was built.
+
+To check on an already-running container, compare the file's timestamp against when the
+container started:
+
+```bash
+docker exec <container> date -u -r /app/data.json +%Y-%m-%dT%H:%M:%S
+```
+
+Close to the container's start time means it downloaded; equal to the image build date
+means it fell back.
 
 ---
 
