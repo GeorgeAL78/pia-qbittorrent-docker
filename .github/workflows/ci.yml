@@ -29,12 +29,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       # Catches a broken Dockerfile or a dead upstream tarball URL before it is
       # tagged - which has bitten before (a libtorrent release was tagged a day
       # before its source tarball was published, so the URL 404'd).
       - name: Build amd64 only
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
