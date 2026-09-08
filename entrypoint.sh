@@ -1454,6 +1454,70 @@ WGEOF
   return 0
 }
 
+# Relaunch qBittorrent so it re-binds to the tunnel's CURRENT address.
+#
+# PIA issues a fresh peer_ip on every addKey, so a successful in-place reconnect
+# ALWAYS leaves the VPN device on a different address than qBittorrent bound to.
+# Whether that matters depends on one setting:
+#
+#   Session\InterfaceAddress absent   -> qBittorrent passes "pia" to libtorrent and
+#                                    follows the device. Survives the change.
+#   Session\InterfaceAddress=0.0.0.0  -> "all IPv4 on this interface RIGHT NOW", which
+#                                    is snapshotted into concrete IPs at the time the
+#                                    setting was applied. It cannot follow.
+#
+# The Web UI writes 0.0.0.0 whenever a user saves preferences, so this is the common
+# case, not an exotic one. Measured on the second config: tunnel healthy on a new
+# address, qBittorrent logging
+#   (C) Failed to listen on IP. IP: "10.178.1.108". Port: "TCP/23750". Reason: "Address not available"
+# twice and then never again - no BitTorrent listener at all, on a working tunnel,
+# with no error surfaced anywhere the user would look.
+#
+# Only a new session re-snapshots, so the fix is a relaunch rather than a settings
+# write - qBittorrent would rewrite 0.0.0.0 on its next save anyway.
+#
+# TIMING IS LOAD-BEARING: the monitor loop below breaks out when qbittorrent-nox is
+# absent, which ends the script and stops the container. The stop, the wait and the
+# relaunch must therefore all finish inside this call, before control returns to that
+# check. This is also why it is not an "exit 5" - a healthy tunnel should not pay for a
+# full container restart, firewall rebuild and token fetch.
+qbt_relaunch() {
+  # NOT named i/qbt_pid at the outer scope: the monitor loop uses $i as its counter.
+  local qr_pid qr_wait
+  qr_pid=$(pgrep -x qbittorrent-nox)
+  [ -z "$qr_pid" ] && return 0
+
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Relaunching qBittorrent so it binds the new tunnel address\n"
+  kill -TERM "$qr_pid" 2>/dev/null
+  qr_wait=0
+  while pgrep -x qbittorrent-nox > /dev/null && [ $qr_wait -lt 45 ]; do
+    sleep 1
+    qr_wait=$((qr_wait + 1))
+  done
+  if pgrep -x qbittorrent-nox > /dev/null; then
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] qBittorrent did not exit within 45s - leaving it alone rather than killing it mid-save\n"
+    return 1
+  fi
+  # Stale lock would make the new instance refuse to start, which - given the loop
+  # above - would stop the container.
+  rm -f /config/qBittorrent/config/lockfile 2>/dev/null
+
+  # Same launch line as the initial start; keep the two in step.
+  doas -u qbtUser sh -c "umask ${UMASK:-022}; exec qbittorrent-nox --webui-port=$WEBUI_PORT --profile=/config" &
+
+  qr_wait=0
+  while ! pgrep -x qbittorrent-nox > /dev/null && [ $qr_wait -lt 30 ]; do
+    sleep 1
+    qr_wait=$((qr_wait + 1))
+  done
+  if pgrep -x qbittorrent-nox > /dev/null; then
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] qBittorrent is back up\n"
+    return 0
+  fi
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] qBittorrent did not come back after the relaunch\n"
+  return 1
+}
+
 # Re-pin the port-forward gateway after a reconnect. Both VPN clients can come
 # back on a DIFFERENT server than they left on - WireGuard because wg_refresh_config
 # fails over through the region's server list, OpenVPN because the profile carries
@@ -1708,6 +1772,11 @@ while : ; do
         # Also clear the transient-refresh counter: leaving it at >=2 means the very
         # next blip tears the freshly-rebuilt tunnel straight back down.
         pf_soft_fail=0
+        # The tunnel came back on a new address. Only a fresh qBittorrent session
+        # re-reads it - see qbt_relaunch(). Deliberately here, in the one success
+        # arm, rather than at reconnect_vpn's several return 0 sites: one decision,
+        # one place. Never on a failed reconnect - there is nothing to re-bind to.
+        qbt_relaunch
       else
         vpn_fail_count=$((vpn_fail_count + 1))
         printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Reconnect attempt $vpn_fail_count did not restore the connection\n"
