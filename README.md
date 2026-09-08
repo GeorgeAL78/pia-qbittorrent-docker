@@ -111,7 +111,7 @@ The title-bar version comes from an `X-Docker-Version` response header this imag
 
 ## Quick Start
 
-> **Requires an active PIA subscription.** [Get one here](https://www.privateinternetaccess.com/pages/buy-a-vpn/1218buyavpn?conversionpoint=RaFInv_30d&invite=U2FsdGVkX18J1Nv81yTCd-NGcpwQ2M61ZrdiLLbhR3g%2C1nufXzgd9Qroyu8zAyDLK2baD5w) — that is a referral link, which supports this project at no extra cost to you. [No-referral link](https://www.privateinternetaccess.com/buy-vpn-online).
+> **Requires an active PIA subscription.** [Get one here](https://www.privateinternetaccess.com/pages/buy-a-vpn/1218buyavpn?conversionpoint=RaFInv_30d&invite=U2FsdGVkX18J1Nv81yTCd-NGcpwQ2M61ZrdiLLbhR3g%2C1nufXzgd9Qroyu8zAyDLK2baD5w) — that is a referral link, which supports this project at no extra cost to you.
 
 ```bash
 docker run -d --init --name=pia-qbittorrent --restart unless-stopped \
