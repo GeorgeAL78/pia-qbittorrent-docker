@@ -227,10 +227,12 @@ Common regions **with port forwarding**:
 
 ### All PIA regions
 
+**Either column works as `PIA_REGION`**, as does any unique fragment — `massachusetts` finds `us_massachusetts-pf`. Short fragments can be ambiguous, so prefer the full name or id if in doubt.
+
 <details>
 <summary><h3>🌍 &nbsp;Click to view all 190 PIA regions</h3></summary>
 
-| Location | `PIA_REGION` | Port forwarding |
+| Location | PIA ID | Port forwarding |
 |----------|--------------|-----------------|
 | AR Streaming Optimized | `ar-so` | Yes |
 | AT Streaming Optimized | `at-so` | Yes |
