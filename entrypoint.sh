@@ -1767,7 +1767,7 @@ while : ; do
     fi
   fi
 
-  if [ $i -gt 600 ]; then
+  if [ $i -gt "$MONITOR_TICK" ]; then
     i=1
     need_reconnect=false
     if is_enabled "$PORT_FORWARDING"; then
@@ -1856,18 +1856,44 @@ while : ; do
         qbt_relaunch
       else
         vpn_fail_count=$((vpn_fail_count + 1))
-        printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Reconnect attempt $vpn_fail_count did not restore the connection\n"
+        printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Reconnect attempt $vpn_fail_count did not restore the connection - retrying in ${RECONNECT_RETRY_GAP}s\n"
+        # Come back sooner than the routine tick. A failed reconnect usually means
+        # the path to PIA is down, and when it returns we should notice in minutes
+        # rather than at the next ten-minute tick - measured in production, five of
+        # six attempts in a 56-minute outage were spent waiting, not trying.
+        #
+        # Done by winding the counter forward rather than by reconnecting from the
+        # 30s sampler: the block below stays the only place that decides how to
+        # recover. i is reset to 1 at the top of this block and incremented at the
+        # bottom of the loop, so this schedules the next run RECONNECT_RETRY_GAP
+        # seconds out.
+        #
+        # Deliberately not ~30s - see vpn-thresholds.sh. Faster retries burn the
+        # six-failure budget inside a normal modem reboot, and the restart that
+        # follows crash-loops on a still-dead WAN.
+        i=$((MONITOR_TICK - RECONNECT_RETRY_GAP + 1))
         # In-place reconnect re-registers the WireGuard KEY, but it cannot refresh
         # an expired PIA TOKEN - the token endpoint is a different host the kill
         # switch correctly blocks while the tunnel is down. Only a full restart can
-        # get a new token (startup fetches one before the firewall is built). So
-        # after ~1h of failed in-place attempts - long enough that transient
-        # outages have had time to self-heal and an expired token is the likely
-        # cause - exit for a clean restart. NOTE: this REQUIRES a restart policy;
-        # without one the container stays stopped (docker update --restart
-        # unless-stopped <name>). The template sets it for new installs.
-        if [ "$vpn_fail_count" -ge 6 ]; then
-          printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] In-place reconnect failed ${vpn_fail_count}x (~1h) - exiting for a full restart to obtain a fresh PIA token. If the container does not come back, set '--restart unless-stopped'.\n"
+        # get a new token (startup fetches one before the firewall is built).
+        #
+        # An expired token is ONE thing a restart fixes, not the diagnosis. A
+        # production outage on v5.2.3-23 ran the full six attempts on a token issued
+        # the previous day: the path to PIA was simply down, and no server answered
+        # addKey at all. So the message below states what is being done and why a
+        # restart might help, without claiming to know the cause.
+        #
+        # RECONNECT_MAX_FAILURES is a TIME budget expressed as a count, so it moves
+        # with RECONNECT_RETRY_GAP - see vpn-thresholds.sh. Shortening the gap alone
+        # would have cut the tolerance from ~57 to ~22 minutes and restarted the
+        # container during ISP outages it used to ride out. Both were changed
+        # together to keep ~58 minutes.
+        #
+        # NOTE: this REQUIRES a restart policy; without one the container stays
+        # stopped (docker update --restart unless-stopped <name>). The template sets
+        # it for new installs.
+        if [ "$vpn_fail_count" -ge "$RECONNECT_MAX_FAILURES" ]; then
+          printf "[$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] In-place reconnect failed ${vpn_fail_count}x over ~$(( (RECONNECT_MAX_FAILURES * (RECONNECT_RETRY_GAP + 60)) / 60 )) minutes - exiting for a full restart. A restart re-fetches the PIA token and rebuilds the tunnel from scratch, which recovers cases an in-place reconnect cannot. If the container does not come back, set '--restart unless-stopped'.\n"
           # Save qBittorrent resume data before exiting so torrents do not re-check.
           qbt_pid=$(pgrep -x qbittorrent-nox)
           if [ -n "$qbt_pid" ]; then
