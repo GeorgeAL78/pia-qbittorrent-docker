@@ -1756,12 +1756,14 @@ while : ; do
         # relaunches qBittorrent. Duplicating any of that is the mistake this
         # codebase has made four times. i is reset to 1 by that block.
         #
-        # -eq (not -ge) so it fires exactly once per outage: a tunnel that stays
-        # down falls back to the normal 10-minute cadence instead of hammering
-        # PIA, and a failed attempt still increments vpn_fail_count.
+        # -eq (not -ge) so it fires exactly once per outage. What a still-down
+        # tunnel then falls back to depends on the outcome: a FAILED reconnect
+        # reschedules itself RECONNECT_RETRY_GAP out (see the failure arm), while
+        # one that comes back simply resumes the routine MONITOR_TICK cadence.
+        # Either way a failed attempt still increments vpn_fail_count.
         if [ "$tunnel_down_samples" -eq 2 ]; then
           printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Tunnel still down on a second check - reconnecting now rather than waiting for the next cycle\n"
-          i=601
+          i=$((MONITOR_TICK + 1))
         fi
       fi
     fi
@@ -1856,29 +1858,17 @@ while : ; do
         qbt_relaunch
       else
         vpn_fail_count=$((vpn_fail_count + 1))
-        printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Reconnect attempt $vpn_fail_count did not restore the connection - retrying in ${RECONNECT_RETRY_GAP}s\n"
-        # Come back sooner than the routine tick. A failed reconnect usually means
-        # the path to PIA is down, and when it returns we should notice in minutes
-        # rather than at the next ten-minute tick - measured in production, five of
-        # six attempts in a 56-minute outage were spent waiting, not trying.
+        # Escalation is decided BEFORE announcing a retry, because on the final miss
+        # there is no retry to announce - the old order printed
+        # "retrying in ${RECONNECT_RETRY_GAP}s" and then immediately exited.
         #
-        # Done by winding the counter forward rather than by reconnecting from the
-        # 30s sampler: the block below stays the only place that decides how to
-        # recover. i is reset to 1 at the top of this block and incremented at the
-        # bottom of the loop, so this schedules the next run RECONNECT_RETRY_GAP
-        # seconds out.
-        #
-        # Deliberately not ~30s - see vpn-thresholds.sh. Faster retries burn the
-        # six-failure budget inside a normal modem reboot, and the restart that
-        # follows crash-loops on a still-dead WAN.
-        i=$((MONITOR_TICK - RECONNECT_RETRY_GAP + 1))
         # In-place reconnect re-registers the WireGuard KEY, but it cannot refresh
         # an expired PIA TOKEN - the token endpoint is a different host the kill
         # switch correctly blocks while the tunnel is down. Only a full restart can
         # get a new token (startup fetches one before the firewall is built).
         #
         # An expired token is ONE thing a restart fixes, not the diagnosis. A
-        # production outage on v5.2.3-23 ran the full six attempts on a token issued
+        # production outage on v5.2.3-23 exhausted its attempts on a token issued
         # the previous day: the path to PIA was simply down, and no server answered
         # addKey at all. So the message below states what is being done and why a
         # restart might help, without claiming to know the cause.
@@ -1902,6 +1892,21 @@ while : ; do
           fi
           exit 5
         fi
+        printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Reconnect attempt $vpn_fail_count did not restore the connection - retrying in ${RECONNECT_RETRY_GAP}s\n"
+        # Come back sooner than the routine tick. A failed reconnect usually means
+        # the path to PIA is down, and when it returns we should notice in minutes
+        # rather than at the next MONITOR_TICK - measured in production, five of six
+        # attempts in a 56-minute outage were spent waiting, not trying.
+        #
+        # Done by winding the counter forward rather than by reconnecting from the
+        # 30s sampler: this block stays the only place that decides how to recover.
+        # i was reset to 1 at the top of it and is incremented at the bottom of the
+        # loop, so this schedules the next run RECONNECT_RETRY_GAP seconds out.
+        #
+        # Deliberately not ~30s - see vpn-thresholds.sh. Faster retries burn the
+        # RECONNECT_MAX_FAILURES budget inside a normal modem reboot, and the restart
+        # that follows crash-loops on a still-dead WAN.
+        i=$((MONITOR_TICK - RECONNECT_RETRY_GAP + 1))
       fi
     fi
   fi

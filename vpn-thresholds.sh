@@ -28,12 +28,12 @@ OVPN_STATUS_HEALTH=180  # healthcheck.sh
 # (measured in production: a 56-minute outage where the path returned at ~04:02 but
 # five of the six attempts were spent waiting).
 #
-# Deliberately NOT ~30s. The exit-5 escalation fires after 6 consecutive failures,
-# and startup fetches a PIA token BEFORE building the firewall - aborting with
-# exit 3 if that fails. Restarting into a still-dead WAN therefore crash-loops. At
-# 30s the six failures land in ~6 minutes, well inside a normal modem reboot; at
-# 180s the budget is 6 x (180 + ~60s per attempt) = ~24 minutes, which still
-# tolerates an ISP outage.
+# Deliberately NOT ~30s, and the reason is the pairing with
+# RECONNECT_MAX_FAILURES below rather than the gap on its own. Startup fetches a PIA
+# token BEFORE building the firewall and aborts with exit 3 if it cannot, so
+# restarting into a still-dead WAN crash-loops - the escalation has to outlast a
+# modem reboot. Whatever this gap is, the count has to be re-derived so the product
+# stays around an hour.
 MONITOR_TICK=600            # entrypoint.sh main loop: seconds between routine checks
 RECONNECT_RETRY_GAP=180     # entrypoint.sh: seconds before retrying a FAILED reconnect
 
