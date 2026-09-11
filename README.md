@@ -97,7 +97,7 @@ The title-bar version comes from an `X-Docker-Version` response header this imag
 | qBittorrent | 5.2.3 |
 | libtorrent | 2.0.14 |
 | Boost | 1.92.0 |
-| OpenVPN | 2.7.5 |
+| OpenVPN | 2.7.7 |
 | WireGuard | 1.0.20260223 |
 | IPTables | 1.8.13 |
 | Python 3 | Alpine 3.24 default |

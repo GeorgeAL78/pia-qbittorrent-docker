@@ -1772,7 +1772,18 @@ while : ; do
   if [ $i -gt "$MONITOR_TICK" ]; then
     i=1
     need_reconnect=false
-    if is_enabled "$PORT_FORWARDING"; then
+    # Port forwarding is refreshed only on a LIVE tunnel. It used to be tried
+    # unconditionally, which meant a dead tunnel on a PF region was never judged
+    # dead at all: the bind failed because the tunnel was down, that failure was
+    # counted as a PF blip (class 1), and a reconnect needed two in a row - so the
+    # 30s sampler's confirmed-down force was spent on a doomed bind and deferred to
+    # the next MONITOR_TICK. Seen in production on ca_toronto: "reconnecting now"
+    # logged, followed by "Port forwarding refresh did not respond" and no
+    # reconnect. Every forced-reconnect test before this had PORT_FORWARDING=false.
+    #
+    # A dead tunnel now falls through to the branch below, which the non-PF path
+    # already uses - one place decides that a dead tunnel reconnects, for both.
+    if is_enabled "$PORT_FORWARDING" && tunnel_alive; then
       pf_bind
       case $? in
         0)
@@ -1836,9 +1847,10 @@ while : ; do
           ;;
       esac
     else
-      # No port forwarding to rebind, but the tunnel itself can still die
-      # silently (interface stays up, no error - torrents just hang with no
-      # indication why). Verify it is actually passing traffic.
+      # Reached with port forwarding off, OR with it on but the tunnel dead. Either
+      # way the question is the tunnel's health, not port forwarding's: a tunnel can
+      # die silently (interface up, no error, torrents just hang) and a bind cannot
+      # be refreshed through it anyway. Verify it is actually passing traffic.
       if ! tunnel_alive; then
         printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Tunnel appears dead (no response from VPN gateway)\n"
         need_reconnect=true
