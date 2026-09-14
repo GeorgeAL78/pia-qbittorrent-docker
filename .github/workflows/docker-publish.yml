@@ -112,7 +112,12 @@ jobs:
             gjergjk/pia-qbittorrent
             ghcr.io/georgeal78/pia-qbittorrent
           tags: |
-            type=raw,value=latest
+            # A tag containing "beta" (e.g. v5.3.0-beta1-1, cut from the beta branch)
+            # publishes :beta and its own version tag, and must NEVER move :latest -
+            # every Unraid template and compose file tracks :latest, so a beta landing
+            # there would silently put every user on pre-release qBittorrent.
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, 'beta') }}
+            type=raw,value=beta,enable=${{ contains(github.ref_name, 'beta') }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
@@ -146,4 +151,6 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
-          make_latest: true
+          # Beta releases are GitHub pre-releases and never take the "Latest" badge.
+          prerelease: ${{ contains(github.ref_name, 'beta') }}
+          make_latest: ${{ contains(github.ref_name, 'beta') && 'false' || 'true' }}

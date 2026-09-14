@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - master
+      - beta
   workflow_dispatch:
 
 # A rapid series of pushes to master (each file committed through the GitHub API is
