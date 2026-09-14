@@ -1137,7 +1137,7 @@ pf_setup_openvpn_tls() {
     # place by catching a misconfigured or unexpected endpoint.
     probe_cn=$(curl -sv -k --connect-timeout 5 --max-time 10 "https://$new_ip:19999/" 2>&1 | grep -oE 'CN=[A-Za-z0-9_.-]+' | head -1 | cut -d= -f2)
     if [ -n "$probe_cn" ] && [ "$probe_cn" != "$pf_cn" ]; then
-      printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Port-forward endpoint identifies as '$probe_cn' but the tunnel authenticated '$pf_cn' - skipping port forwarding\n"
+      printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Port-forward endpoint identifies as '$probe_cn' but the tunnel authenticated '$pf_cn' - not using it for port forwarding\n"
       return 1
     fi
   else
@@ -1155,7 +1155,7 @@ pf_setup_openvpn_tls() {
   # Refuse to fall back to unverified TLS: skipping port forwarding is better than
   # binding a port over a connection we cannot authenticate. Same stance as the
   # IPv6 handling above.
-  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Could not read the port-forward gateway certificate - skipping port forwarding rather than using unverified TLS\n"
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Could not read the port-forward gateway certificate - not port forwarding over unverified TLS\n"
   return 1
 }
 
@@ -1189,6 +1189,56 @@ pf_bind() {
   return 1
 }
 
+# Fetch a PIA token for the port-forward API into $piaToken. Returns 1, leaving the
+# previous token in place, if none came back.
+#
+# Only ever called with the tunnel UP: at startup after the VPN connects, and from
+# the monitor loop and reconnect path after tunnel_alive() has passed. The kill
+# switch then routes the request through the tunnel (measured: the token host
+# resolves "via ... dev tun0", and with the tunnel killed the same request cannot
+# even resolve). That is what separates this from the forbidden case - fetching a
+# token while the tunnel is DOWN, which needs a hole in the firewall.
+#
+# Fetched fresh rather than reused because PIA tokens expire after about a day, so a
+# retry that reused the startup token would be refused ("Login failed!") forever.
+# "// empty" because jq -r prints the string "null" for a missing field, which is
+# not empty - the old check logged "Got PIA token" after a failed login.
+pf_fetch_token() {
+  local t
+  t=$(curl --connect-timeout 8 --max-time 15 -s --location --request POST \
+        'https://www.privateinternetaccess.com/api/client/v2/token' \
+        --form "username=$(sed '1!d' /auth.conf)" \
+        --form "password=$(sed '2!d' /auth.conf)" | jq -r '.token // empty' 2>/dev/null)
+  [ -n "$t" ] || return 1
+  piaToken="$t"
+}
+
+# ONE getSignature request through the tunnel. Sets pia_sig, pf_ec, pf_status and
+# pf_msg; returns 0 only on status OK. Startup (6 tries), pf_resign_and_bind (1) and
+# pf_try_pending (1) all call this, each with its own retry policy.
+pf_get_signature() {
+  pia_sig=$(curl --connect-timeout 8 --max-time 15 --get -s $PF_CONNECT $PF_CERT \
+              --data-urlencode "token=$piaToken" \
+              "https://$PF_GATEWAY:19999/getSignature")
+  pf_ec=$?
+  pf_status=$(echo "$pia_sig" | jq -r '.status // empty' 2>/dev/null)
+  pf_msg=$(echo "$pia_sig" | jq -r '.message // empty' 2>/dev/null)
+  [ "$pf_status" = "OK" ]
+}
+
+# Human-readable reason for the last pf_get_signature failure. A parseable reply is
+# NOT "unreachable": measured on an OpenVPN Montreal server, PIA answered
+# {"status":"ERROR","message":"Login failed!"} with curl exit 0, and the old log
+# line called that "The PF API stayed unreachable". Print with %s - this is text
+# from the network and must not be used as a printf format.
+pf_sig_failure_text() {
+  if [ -n "$pf_status" ]; then
+    echo "PIA refused: ${pf_msg:-status $pf_status}"
+  else
+    echo "no usable response (curl exit $pf_ec)"
+  fi
+}
+
 # Replace an expired signature and re-bind. Called only when pf_bind() reported a
 # measured "bad signature" - PIA expires them after roughly two months.
 #
@@ -1201,12 +1251,13 @@ pf_bind() {
 # Runs through the established tunnel; no firewall or routing change.
 # Returns pf_bind()'s classification, or 1 if no fresh signature could be obtained.
 pf_resign_and_bind() {
-  [ -z "$piaToken" ] && return 1
+  # A fresh token: signatures expire after about two months, so the startup token
+  # is always long dead by the time this runs. Both callers have verified the tunnel.
+  pf_fetch_token || return 1
   # Single attempt on purpose. The startup acquisition retries 6x because the PF
   # API is settling right after connect; this path is last-resort and a fresh
   # signature costs the user their port, so it must not loop.
-  pia_sig=$(curl --connect-timeout 8 --max-time 15 --get -s $PF_CONNECT $PF_CERT --data-urlencode "token=$piaToken" "https://$PF_GATEWAY:19999/getSignature")
-  [ "$(echo "$pia_sig" | jq -r '.status' 2>/dev/null)" = "OK" ] || return 1
+  pf_get_signature || return 1
   signature=$(echo "$pia_sig" | jq -r '.signature')
   payload=$(echo "$pia_sig" | jq -r '.payload')
   new_port=$(echo "$payload" | base64 -d | jq -r '.port' 2>/dev/null)
@@ -1235,11 +1286,19 @@ pf_resign_and_bind() {
 }
 
 
-if is_enabled "$PORT_FORWARDING"; then
-  if ! pf_setup_openvpn_tls; then
-    PORT_FORWARDING=false
-  fi
-fi
+# Port forwarding that is wanted and supported but not yet working. Set whenever
+# startup could not get as far as a bound port, and cleared by pf_try_pending()
+# once the monitor loop manages it.
+#
+# This replaces setting PORT_FORWARDING=false on failure, which disabled the whole
+# feature for the life of the container: the recovery block is gated on
+# is_enabled "$PORT_FORWARDING", so nothing ever tried again. Measured cause worth
+# recovering from: one OpenVPN Montreal server refused every signature request with
+# "Login failed!" while WireGuard Montreal and OpenVPN Toronto bound normally, and
+# minutes later the same region bound 5/5 on other servers.
+#
+# PORT_FORWARDING=false is now reserved for regions that do not support it at all.
+pf_pending=false
 
 if is_enabled "$PORT_FORWARDING"; then
   printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Setting up port forwarding\n"
@@ -1249,16 +1308,6 @@ if is_enabled "$PORT_FORWARDING"; then
     printf " * Using Wireguard port forwarding\n"
   else
     printf " * Using OpenVPN port forwarding\n"
-  fi
-
-  # Get a token from PIA to authenticate the port forwarding request
-  # --location just to follow redirects
-  piaToken=$(curl --connect-timeout 8 --max-time 15 -s --location --request POST \
-            'https://www.privateinternetaccess.com/api/client/v2/token' \
-            --form "username=$(sed '1!d' /auth.conf)" \
-            --form "password=$(sed '2!d' /auth.conf)" | jq -r '.token')
-  if [ ! -z "$piaToken" ]; then
-    printf " * Got PIA token\n"
   fi
 
   # Does this region support port forwarding? (all US regions do not.) Looked up
@@ -1271,6 +1320,7 @@ if is_enabled "$PORT_FORWARDING"; then
                   select((.name | normalize | contains($search)) or (.id | normalize | contains($search)))] |
                   if length > 0 then .[0].port_forward else empty end' /app/data.json 2>/dev/null)
   pf_status=""
+  pf_msg=""
   pf_ec=0
   pf_try=0
   pia_sig=""
@@ -1278,39 +1328,34 @@ if is_enabled "$PORT_FORWARDING"; then
     printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Region '$PIA_REGION' does not support port forwarding (all US regions lack it) - continuing without it\n"
     printf "          See https://github.com/GeorgeAL78/pia-qbittorrent-docker#pia-regions to pick a PF-capable region\n"
     pf_status="UNSUPPORTED"
+    PORT_FORWARDING=false
+  elif ! pf_setup_openvpn_tls; then
+    # pf_setup_openvpn_tls has already said why.
+    pf_pending=true
+  elif ! pf_fetch_token; then
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Could not get a port-forwarding token from PIA\n"
+    pf_pending=true
   else
-    # Get the signature and payload. Deliberately NOT shared with
-    # pf_resign_and_bind()'s getSignature call: this one retries 6x because the PF
-    # API is still settling just after connect, whereas that one is last-resort and
-    # must not loop. Same URL and token, different policy.
-    #
-    # Right after the tunnel comes up the PF API can
-    # need a few seconds before it will issue a signature (route settling on our side,
-    # peer registration on PIA's side), so retry instead of giving up on the first try.
+    printf " * Got PIA token\n"
+    # Right after the tunnel comes up the PF API can need a few seconds before it
+    # will issue a signature (route settling on our side, peer registration on
+    # PIA's side), so retry instead of giving up on the first try.
     while [ $pf_try -lt 6 ]; do
       pf_try=$((pf_try + 1))
-      pia_sig=$(curl --connect-timeout 8 --max-time 15 --get -s \
-                $PF_CONNECT \
-                $PF_CERT \
-                --data-urlencode "token=$piaToken" \
-                "https://$PF_GATEWAY:19999/getSignature")
-      pf_ec=$?
-      pf_status=$(echo "$pia_sig" | jq -r '.status' 2>/dev/null)
-      [ "$pf_status" = "OK" ] && break
+      pf_get_signature && break
       if [ $pf_try -lt 6 ]; then
-        printf " * Port forwarding API not ready yet (attempt $pf_try/6, curl exit $pf_ec) - retrying in 4s\n"
+        printf " * Port forwarding signature not issued (attempt $pf_try/6, %s) - retrying in 4s\n" "$(pf_sig_failure_text)"
         sleep 4
       fi
     done
+
+    if [ "$pf_status" != "OK" ]; then
+      printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Port forwarding could not be set up for region '$PIA_REGION' after $pf_try attempts - %s\n" "$(pf_sig_failure_text)"
+      pf_pending=true
+    fi
   fi
 
-  if [ "$pf_status" != "OK" ]; then
-    if [ "$pf_status" != "UNSUPPORTED" ]; then
-      printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Port forwarding could not be established for region '$PIA_REGION' after $pf_try attempts (last curl exit $pf_ec, status '$pf_status') - continuing without it\n"
-      printf "          The PF API stayed unreachable; your kill switch is unaffected. Try a restart or another region.\n"
-    fi
-    PORT_FORWARDING=false
-  else
+  if [ "$pf_status" = "OK" ]; then
     signature=$(echo "$pia_sig" | jq -r '.signature')
     if [ ! -z "$signature" ]; then
       printf " * Got signature\n"
@@ -1343,10 +1388,15 @@ if is_enabled "$PORT_FORWARDING"; then
       printf " * Updating port in qBittorrent config\n"
       sed -i "s/Session\\\Port=[0-9]*/Session\\\Port=$PF_PORT/g" /config/qBittorrent/config/qBittorrent.conf
     else
-      printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Port forwarding bind failed - continuing without it\n"
-      printf "          $(echo $binding)\n"
-      PORT_FORWARDING=false
+      printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Port forwarding bind failed\n"
+      printf "          %s\n" "$(echo $binding)"
+      pf_pending=true
     fi
+  fi
+
+  if [ "$pf_pending" = "true" ]; then
+    printf "          Continuing without a forwarded port for now - it is retried every $((MONITOR_TICK / 60)) minutes\n"
+    printf "          while the tunnel is up. Your kill switch is unaffected.\n"
   fi
 fi
 
@@ -1529,11 +1579,17 @@ WGEOF
 # full container restart, firewall rebuild and token fetch.
 qbt_relaunch() {
   # NOT named i/qbt_pid at the outer scope: the monitor loop uses $i as its counter.
-  local qr_pid qr_wait
+  # Optional $1: a forwarded port to write into qBittorrent.conf on the way through.
+  local qr_pid qr_wait qr_port
+  qr_port="$1"
   qr_pid=$(pgrep -x qbittorrent-nox)
   [ -z "$qr_pid" ] && return 0
 
-  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Relaunching qBittorrent so it binds the new tunnel address\n"
+  if [ -n "$qr_port" ]; then
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Relaunching qBittorrent so it listens on forwarded port $qr_port\n"
+  else
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Relaunching qBittorrent so it binds the new tunnel address\n"
+  fi
   kill -TERM "$qr_pid" 2>/dev/null
   qr_wait=0
   while pgrep -x qbittorrent-nox > /dev/null && [ $qr_wait -lt 45 ]; do
@@ -1547,6 +1603,14 @@ qbt_relaunch() {
   # Stale lock would make the new instance refuse to start, which - given the loop
   # above - would stop the container.
   rm -f /config/qBittorrent/config/lockfile 2>/dev/null
+
+  # The port is written HERE, after qBittorrent has exited and before it starts:
+  # a running qBittorrent rewrites qBittorrent.conf from memory when it saves, so a
+  # write made while it was up is reverted by its own shutdown (measured: wrote
+  # 59999, read back 42940).
+  if [ -n "$qr_port" ]; then
+    sed -i "s/Session\\\Port=[0-9]*/Session\\\Port=$qr_port/g" /config/qBittorrent/config/qBittorrent.conf
+  fi
 
   # Same launch line as the initial start; keep the two in step.
   doas -u qbtUser sh -c "umask ${UMASK:-022}; exec qbittorrent-nox --webui-port=$WEBUI_PORT --profile=/config" &
@@ -1633,6 +1697,13 @@ reconnect_vpn() {
   fi
 
   if is_enabled "$PORT_FORWARDING"; then
+    # Nothing to rebind while port forwarding is still pending - there is no
+    # signature, and an empty bind would only report a failure. The monitor loop
+    # owns the pending retry.
+    if [ "$pf_pending" = "true" ]; then
+      printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Reconnected - tunnel is back up (port forwarding is still pending and will be retried)\n"
+      return 0
+    fi
     # Point at whichever server we actually came back on before rebinding.
     # A failure here is a port-forwarding problem, NOT a dead tunnel: tunnel_alive
     # confirmed the tunnel is up immediately above. Returning 1 would count a
@@ -1675,6 +1746,63 @@ reconnect_vpn() {
   return 0
 }
 
+
+# Retry port forwarding that startup could not establish. Called only from the
+# monitor loop's recovery block, only while pf_pending is true, and only with the
+# tunnel verified alive, so every request here goes through the tunnel.
+#
+# It NEVER asks for a reconnect and never exits: this is a port-forwarding problem
+# on a working tunnel, and the answer to "what if it recovers on its own 30 seconds
+# from now?" is simply that the next attempt succeeds. Returns 0 once the port is
+# bound, open on the firewall and in use by qBittorrent.
+pf_try_pending() {
+  local tp_rc
+  # OpenVPN: re-read the gateway and its authenticated name (startup may have failed
+  # right there). WireGuard: re-derive the pin from the current server.
+  if ! pf_repin; then
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Port forwarding still pending - gateway not readable yet, retrying next cycle\n"
+    return 1
+  fi
+  if ! pf_fetch_token; then
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Port forwarding still pending - no token from PIA, retrying next cycle\n"
+    return 1
+  fi
+  if ! pf_get_signature; then
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Port forwarding still pending - %s - retrying next cycle\n" "$(pf_sig_failure_text)"
+    return 1
+  fi
+  signature=$(echo "$pia_sig" | jq -r '.signature')
+  payload=$(echo "$pia_sig" | jq -r '.payload')
+  PF_PORT=$(echo "$payload" | base64 -d | jq -r '.port' 2>/dev/null)
+  case "$PF_PORT" in
+    ''|null|*[!0-9]*)
+      printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Port forwarding still pending - signature carried no port, retrying next cycle\n"
+      return 1 ;;
+  esac
+  pf_bind
+  tp_rc=$?
+  if [ $tp_rc -ne 0 ]; then
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Port forwarding still pending - bind failed (class $tp_rc), retrying next cycle\n"
+    return 1
+  fi
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Port forwarding established on retry - port $PF_PORT\n"
+  if ! iptables -A INPUT -i $VPN_DEVICE -p tcp --dport $PF_PORT -j ACCEPT ||
+     ! iptables -A INPUT -i $VPN_DEVICE -p udp --dport $PF_PORT -j ACCEPT; then
+    # INPUT only, on the tunnel device - the same rules startup adds. A failure
+    # leaves inbound closed (fail-safe), so stay pending and try again.
+    iptables -D INPUT -i $VPN_DEVICE -p tcp --dport $PF_PORT -j ACCEPT 2>/dev/null
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Could not open port $PF_PORT on the firewall - retrying next cycle\n"
+    return 1
+  fi
+  pf_pending=false
+  pf_soft_fail=0
+  if ! qbt_relaunch "$PF_PORT"; then
+    # The bind and firewall are in place and the routine refresh keeps the port
+    # alive; only qBittorrent's listen port could not be switched in place.
+    printf "          qBittorrent keeps its previous listen port until the container is restarted.\n"
+  fi
+  return 0
+}
 
 ############################################
 # Start qBittorrent
@@ -1787,7 +1915,12 @@ while : ; do
     #
     # A dead tunnel now falls through to the branch below, which the non-PF path
     # already uses - one place decides that a dead tunnel reconnects, for both.
-    if is_enabled "$PORT_FORWARDING" && tunnel_alive; then
+    if is_enabled "$PORT_FORWARDING" && [ "$pf_pending" = "true" ] && tunnel_alive; then
+      # Startup never got a port. Retry acquiring one - a separate arm on purpose:
+      # with no signature, pf_bind would report class 1 and two of those would
+      # reconnect a healthy tunnel over a port-forwarding problem.
+      pf_try_pending
+    elif is_enabled "$PORT_FORWARDING" && [ "$pf_pending" != "true" ] && tunnel_alive; then
       pf_bind
       case $? in
         0)
