@@ -1201,16 +1201,44 @@ pf_bind() {
 #
 # Fetched fresh rather than reused because PIA tokens expire after about a day, so a
 # retry that reused the startup token would be refused ("Login failed!") forever.
+#
+# But NOT fetched on every call: PIA rate-limits this endpoint per account (measured:
+# after a busy test hour it answered 429 {"code":"too_many_attempts"} for every
+# request). A token is reused while it is under PF_TOKEN_MAX_AGE, and replaced early
+# only if PIA refused a signature with "Login failed!" AND the token is over
+# PF_TOKEN_SUSPECT_AGE - a fresh token refused that way means a bad server, which a
+# new token cannot fix and which would otherwise cost a login every retry.
+#
 # "// empty" because jq -r prints the string "null" for a missing field, which is
 # not empty - the old check logged "Got PIA token" after a failed login.
+PF_TOKEN_MAX_AGE=43200       # 12h; PIA tokens last about a day
+PF_TOKEN_SUSPECT_AGE=3600    # 1h
+piaToken=""
+pf_token_time=0
+pf_token_err=""
+pf_msg=""
 pf_fetch_token() {
-  local t
-  t=$(curl --connect-timeout 8 --max-time 15 -s --location --request POST \
+  local t r age
+  age=$(( $(date +%s) - pf_token_time ))
+  if [ -n "$piaToken" ] && [ $age -lt $PF_TOKEN_MAX_AGE ]; then
+    case "$pf_msg" in
+      *"Login failed"*) [ $age -lt $PF_TOKEN_SUSPECT_AGE ] && return 0 ;;
+      *) return 0 ;;
+    esac
+  fi
+  r=$(curl --connect-timeout 8 --max-time 15 -s --location --request POST \
         'https://www.privateinternetaccess.com/api/client/v2/token' \
         --form "username=$(sed '1!d' /auth.conf)" \
-        --form "password=$(sed '2!d' /auth.conf)" | jq -r '.token // empty' 2>/dev/null)
-  [ -n "$t" ] || return 1
+        --form "password=$(sed '2!d' /auth.conf)")
+  t=$(echo "$r" | jq -r '.token // empty' 2>/dev/null)
+  if [ -z "$t" ]; then
+    pf_token_err=$(echo "$r" | jq -r '.message // .code // empty' 2>/dev/null)
+    [ -z "$pf_token_err" ] && pf_token_err="no usable response"
+    return 1
+  fi
   piaToken="$t"
+  pf_token_time=$(date +%s)
+  pf_token_err=""
 }
 
 # ONE getSignature request through the tunnel. Sets pia_sig, pf_ec, pf_status and
@@ -1251,8 +1279,9 @@ pf_sig_failure_text() {
 # Runs through the established tunnel; no firewall or routing change.
 # Returns pf_bind()'s classification, or 1 if no fresh signature could be obtained.
 pf_resign_and_bind() {
-  # A fresh token: signatures expire after about two months, so the startup token
-  # is always long dead by the time this runs. Both callers have verified the tunnel.
+  # Signatures expire after about two months, so the startup token is long dead by
+  # the time this runs and pf_fetch_token replaces it. Both callers have verified
+  # the tunnel.
   pf_fetch_token || return 1
   # Single attempt on purpose. The startup acquisition retries 6x because the PF
   # API is settling right after connect; this path is last-resort and a fresh
@@ -1333,7 +1362,7 @@ if is_enabled "$PORT_FORWARDING"; then
     # pf_setup_openvpn_tls has already said why.
     pf_pending=true
   elif ! pf_fetch_token; then
-    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Could not get a port-forwarding token from PIA\n"
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Could not get a port-forwarding token from PIA (%s)\n" "$pf_token_err"
     pf_pending=true
   else
     printf " * Got PIA token\n"
@@ -1764,7 +1793,7 @@ pf_try_pending() {
     return 1
   fi
   if ! pf_fetch_token; then
-    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Port forwarding still pending - no token from PIA, retrying next cycle\n"
+    printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Port forwarding still pending - no token from PIA (%s), retrying next cycle\n" "$pf_token_err"
     return 1
   fi
   if ! pf_get_signature; then
