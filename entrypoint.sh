@@ -782,13 +782,17 @@ fi
 printf " * Creating rules for webui-port:$WEBUI_PORT\n"
 # Loop through each WebUI interface
 for webui_interface in  $(echo $WEBUI_INTERFACES | sed "s/,/ /g"); do
-  # Apply OUTPUT rules (allow outgoing traffic on WEBUI_PORT)
+  # INPUT only: accept NEW connections to the Web UI. Its replies leave via the
+  # ESTABLISHED,RELATED rule above, so no OUTPUT rule is needed. There used to be
+  # OUTPUT --dport/--sport WEBUI_PORT rules here with no destination limit, and they
+  # were a real kill-switch bypass, verified live with the tunnel up AND down on both
+  # clients: any process, qbtUser included, could reach any internet host on port
+  # WEBUI_PORT (or from local port WEBUI_PORT) out of $INTERFACE by binding the
+  # container address, which the "from <container-ip> lookup 128" rule routes
+  # outside the tunnel, and it egressed with the real IP. The matching INPUT --sport
+  # rule is gone too: it accepted unsolicited packets from any host's port WEBUI_PORT.
   printf "   * * Applied iptables rules for webui on interface: $webui_interface..."
-  iptables -A OUTPUT -o "$webui_interface" -p tcp --dport "$WEBUI_PORT" -j ACCEPT
-  iptables -A OUTPUT -o "$webui_interface" -p tcp --sport "$WEBUI_PORT" -j ACCEPT
-  # Apply INPUT rules (allow incoming traffic on WEBUI_PORT)
   iptables -A INPUT -i "$webui_interface" -p tcp --dport "$WEBUI_PORT" -j ACCEPT
-  iptables -A INPUT -i "$webui_interface" -p tcp --sport "$WEBUI_PORT" -j ACCEPT
   printf "DONE\n"
 done
 
