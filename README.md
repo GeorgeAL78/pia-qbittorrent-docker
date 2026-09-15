@@ -75,6 +75,7 @@ The title-bar version comes from an `X-Docker-Version` response header this imag
 - Auto-healing VPN — detects a dead/dropped tunnel and reconnects in place (WireGuard re-registers its key, OpenVPN restarts the client and re-authenticates), escalating to a full container restart if the in-place reconnect can't recover it
 - qBittorrent is relaunched after a successful reconnect, so it binds the new tunnel address. Resume data is saved first
 - Automatic server failover — if the VPN server you're on goes down, reconnect tries the other servers in your region instead of retrying a dead one, and port forwarding follows it to the new server rather than silently pointing at the old one
+- Port forwarding that cannot be set up at startup is retried every 10 minutes while the VPN is up, and qBittorrent is switched to the port once it works — no restart needed
 - Multi-arch images — `amd64` and `arm64`
 - VPN network interface auto-detected and locked (WireGuard `pia` / OpenVPN `tun0`)
 - Configurable UID/GID for correct file ownership on Unraid and NAS systems
@@ -101,12 +102,7 @@ The title-bar version comes from an `X-Docker-Version` response header this imag
 | OpenVPN | 2.7.7 |
 | WireGuard | 1.0.20260223 |
 | IPTables | 1.8.13 |
-| Python 3 | Alpine 3.24 default |
-
-> **Note on Python:** `python3` is in the runtime image because qBittorrent's
-> search plugins require it. With `ack` and `perl` removed in v5.2.3-13 it is now
-> the largest optional component left, so it is an obvious target for a future
-> size pass - removing it would silently break the Search tab.
+| Python 3 | Alpine 3.24 default (required by qBittorrent search plugins) |
 
 ---
 
@@ -130,6 +126,8 @@ docker run -d --init --name=pia-qbittorrent --restart unless-stopped \
   gjergjk/pia-qbittorrent:latest
 ```
 
+Then open the Web UI on port `8888`. `--cap-add=NET_ADMIN` is required (the VPN and kill switch need it) and `--restart unless-stopped` is strongly recommended so the container can restart itself to recover from an expired VPN token. `UID=99`/`GID=100`/`UMASK=000` suit Unraid; see [Environment Variables](#environment-variables) for other systems.
+
 ---
 
 ## Environment Variables
@@ -140,7 +138,7 @@ docker run -d --init --name=pia-qbittorrent --restart unless-stopped \
 | `PIA_PASSWORD` | | PIA account password |
 | `PIA_REGION` | `netherlands` | VPN region — see [PIA Servers](#pia-regions) |
 | `VPN_CLIENT` | `openvpn` | VPN client: `openvpn` or `wireguard` |
-| `PORT_FORWARDING` | `true` | Enable PIA port forwarding for seeding. Falls back gracefully if your region doesn't support it |
+| `PORT_FORWARDING` | `true` | Enable PIA port forwarding for seeding. Skipped automatically in regions that do not support it, and retried in the background if PIA cannot provide a port at startup |
 | `UID` | `700` | User ID for qBittorrent process. Use `99` for Unraid |
 | `GID` | `700` | Group ID for qBittorrent process. Use `100` for Unraid |
 | `UMASK` | `022` | Umask for downloads. `000` = fully open, `002` = group-writable |
@@ -169,17 +167,20 @@ docker run -d --init --name=pia-qbittorrent --restart unless-stopped \
 
 ## Unraid Setup
 
-Set the following container variables for correct file ownership:
+Available in **Community Applications**: search for `pia-qbittorrent`.
 
 | Variable | Value |
 |----------|-------|
 | `UID` | `99` |
 | `GID` | `100` |
-| `UMASK` | `000` |
+| `UMASK` | `000` (or `002`) |
 
 This maps qBittorrent to Unraid's `nobody:users` so downloaded files are accessible from SMB shares.
 
-**Network type:** leave it on **Bridge** (the Unraid default). The VPN tunnel runs entirely inside the container, so no special network mode is needed.
+- **Storage:** map `/downloads` to your share (e.g. `/mnt/user/downloads/`) and `/config` to appdata (e.g. `/mnt/user/appdata/pia-qbittorrent/`).
+- **Network:** Bridge and custom bridge networks both work; the VPN tunnel runs inside the container either way. Avoid **Host** networking, as the kill switch would then firewall the Unraid host itself.
+- **Extra Parameters:** keep `--cap-add=NET_ADMIN --restart unless-stopped`.
+- **Other containers** (Sonarr, Radarr, etc.): if they are on a different Docker network and cannot reach the Web UI, add their subnet to `EXTRA_SUBNETS`, e.g. `172.18.0.0/16`.
 
 ---
 
@@ -187,14 +188,14 @@ This maps qBittorrent to Unraid's `nobody:users` so downloaded files are accessi
 
 ### WireGuard
 - Lower CPU usage and faster speeds due to less overhead
-- Requires Linux kernel 5.6+
-- Port forwarding works in most regions but may have issues in some
-- Best for stable home networks
+- Needs WireGuard support in the host kernel (built in since Linux 5.6; Unraid has it)
+- Best for most home setups
 
 ### OpenVPN
-- Broader compatibility
-- Better for unusual network configurations or high latency
-- More reliable port forwarding
+- Works where WireGuard cannot, e.g. an older kernel without WireGuard
+- Can be steadier on unusual networks or high-latency links
+
+Port forwarding, reconnects and server failover work the same on both.
 
 > **Note:** Port forwarding is available in most PIA regions, but not all. See the [PIA Regions](#pia-regions) section for the full list of regions that support it.
 
@@ -444,8 +445,9 @@ curl -s https://serverlist.piaservers.net/vpninfo/servers/v6 | head -1 | \
 - Port is assigned randomly by PIA — you cannot specify one
 - Port is valid for up to 2 months
 - Container refreshes the port binding every 10 minutes to keep it alive
-- **If your region doesn't support port forwarding (e.g. all US regions), the container logs a warning and keeps running without it** — it no longer crashes. Pick a [supported region](#pia-regions) to use it.
-- If the container restarts too frequently (20+ times in 30 mins) you may hit PIA's rate limit — stop the container and wait 1 hour
+- **If PIA cannot provide a port at startup**, the container runs without one and retries every 10 minutes while the VPN is up; once it works, the port is opened and qBittorrent is switched to it automatically. The log shows PIA's reason.
+- **If your region doesn't support port forwarding (e.g. all US regions)**, the container logs it and keeps running without it. Pick a [supported region](#pia-regions) to use it.
+- PIA limits how often an account can sign in. Restarting the container many times in a short period can hit that limit — see [Known Issues](#known-issues)
 
 ---
 
@@ -558,22 +560,26 @@ The first line reports whether the PIA server list could be refreshed:
 
 All three are normal — the container works either way.
 
+Port forwarding, if it could not be set up straight away:
+
+| Line | Meaning |
+|------|---------|
+| `Port forwarding could not be set up ... - PIA refused: <reason>` | PIA answered but refused; the reason is PIA's own message |
+| `... - no usable response (curl exit N)` | PIA's port-forwarding service did not answer |
+| `Port forwarding still pending - ... retrying next cycle` | Still retrying, every 10 minutes; the VPN is unaffected |
+| `Port forwarding established on retry - port N` | Recovered; qBittorrent is relaunched on the new port |
+
 ---
 
 ## Known Issues
-
-- **Downloads stopped after the VPN reconnected** *(fixed in 5.2.3-19)*
-  - Affected anyone who had saved preferences in the Web UI, which records the tunnel address at that moment instead of following the interface. After a reconnect or server failover the address changes, and qBittorrent kept binding the old one
-  - The tunnel stays healthy and nothing in the Web UI indicates a problem; transfers simply stop. `qbittorrent.log` shows `Failed to listen on IP ... Address not available`
-  - **Fix**: update to 5.2.3-19 or later. On an older version, `docker restart <container>` restores it immediately
 
 - **Banned client error on some trackers**
   - Some private trackers may not have whitelisted the current qBittorrent version yet
   - Check the tracker's forum for supported client versions
 
-- **Port forwarding rate limit**
-  - If the container restarts more than 20 times in 30 minutes, PIA will rate limit port forwarding requests
-  - **Fix**: Stop the container and wait 1 hour
+- **PIA sign-in limit after many restarts**
+  - PIA limits how often an account can sign in, and every container start signs in. After many restarts in a short period PIA refuses with `Try again later.`, and port forwarding cannot be set up
+  - **Fix**: stop restarting and wait — in testing the limit cleared within 30 minutes. A running container retries port forwarding on its own, so no further restart is needed
 
 - **Special characters in password**
   - If your password contains special characters use the `/auth.conf` file instead of environment variables
@@ -606,8 +612,8 @@ containers can be updated in place with `docker update --restart unless-stopped 
 |------|---------|------------------------|
 | `0` | Normal shutdown | - |
 | `1` | Invalid configuration (bad `WEBUI_PORT`, unresolvable `PIA_REGION`, IPv6 cannot be blocked) | No - fix the setting |
-| `3` | PIA credentials missing or rejected while fetching a token | No - fix `/auth.conf` |
-| `5` | Deliberate restart to recover something that cannot be fixed in place: an expired PIA token (after 6 failed in-place reconnects), or a changed forwarded port that a running qBittorrent cannot be moved to | **Yes** |
+| `3` | PIA credentials missing or rejected while fetching a token, or the OpenVPN server name could not be resolved | No - fix `/auth.conf` or check DNS |
+| `5` | Deliberate restart to recover something that cannot be fixed in place: about an hour of failed in-place reconnects (for example an expired PIA token), no WireGuard server in the region accepting the key at startup, or a changed forwarded port that a running qBittorrent cannot be moved to | **Yes** |
 | `6` | OpenVPN reported a fatal error in its log | No |
 | `7` | VPN authentication failed | No - check credentials |
 
@@ -618,7 +624,7 @@ saved and torrents do not re-check on the next start.
 
 ## Changelog
 
-See [Docker Hub](https://hub.docker.com/r/gjergjk/pia-qbittorrent) for full changelog.
+Every release and its notes are on [GitHub Releases](https://github.com/GeorgeAL78/pia-qbittorrent-docker/releases). A summary of recent changes is on [Docker Hub](https://hub.docker.com/r/gjergjk/pia-qbittorrent).
 
 ---
 
