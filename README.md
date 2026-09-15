@@ -14,6 +14,7 @@
 [![Image Size](https://img.shields.io/docker/image-size/gjergjk/pia-qbittorrent/latest?logo=docker&label=image%20size)](https://hub.docker.com/r/gjergjk/pia-qbittorrent/tags)
 
 [![Latest Release](https://img.shields.io/github/v/release/GeorgeAL78/pia-qbittorrent-docker?label=latest%20release)](https://github.com/GeorgeAL78/pia-qbittorrent-docker/releases)
+[![Beta](https://img.shields.io/github/v/release/GeorgeAL78/pia-qbittorrent-docker?include_prereleases&filter=*beta*&label=beta&color=orange)](https://github.com/GeorgeAL78/pia-qbittorrent-docker/releases?q=beta&expanded=true)
 [![Release Date](https://img.shields.io/github/release-date/GeorgeAL78/pia-qbittorrent-docker)](https://github.com/GeorgeAL78/pia-qbittorrent-docker/releases)
 [![Commits Since](https://img.shields.io/github/commits-since/GeorgeAL78/pia-qbittorrent-docker/latest)](https://github.com/GeorgeAL78/pia-qbittorrent-docker/commits/master)
 [![Last Commit](https://img.shields.io/github/last-commit/GeorgeAL78/pia-qbittorrent-docker)](https://github.com/GeorgeAL78/pia-qbittorrent-docker/commits/master)
