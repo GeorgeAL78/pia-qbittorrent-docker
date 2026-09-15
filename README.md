@@ -5,7 +5,7 @@
 ## qBittorrent & Private Internet Access VPN Docker
 
 [![Latest Release](https://img.shields.io/github/v/release/GeorgeAL78/pia-qbittorrent-docker?label=latest%20release)](https://github.com/GeorgeAL78/pia-qbittorrent-docker/releases)
-[![Beta](https://img.shields.io/github/v/release/GeorgeAL78/pia-qbittorrent-docker?include_prereleases&filter=*beta*&label=beta&color=orange)](https://github.com/GeorgeAL78/pia-qbittorrent-docker/releases?q=beta&expanded=true)
+[![Beta](https://img.shields.io/github/v/release/GeorgeAL78/pia-qbittorrent-docker?include_prereleases&filter=*beta*&label=beta&color=orange)](https://github.com/GeorgeAL78/pia-qbittorrent-docker/releases?q=prerelease%3Atrue&expanded=true)
 [![qBittorrent](https://img.shields.io/badge/dynamic/regex?url=https%3A%2F%2Fraw.githubusercontent.com%2FGeorgeAL78%2Fpia-qbittorrent-docker%2Fmaster%2FDockerfile&search=release-%28%5Cd%2B%5C.%5Cd%2B%5C.%5Cd%2B%29&replace=%241&label=qBittorrent&color=2186c4&logo=qbittorrent)](https://github.com/qbittorrent/qBittorrent/releases)
 [![Unraid CA](https://img.shields.io/badge/Unraid-Community%20Apps-orange)](https://ca.unraid.net/apps?q=pia-qbittorrent)
 
