@@ -6,7 +6,8 @@
 
 [![Latest Release](https://img.shields.io/github/v/release/GeorgeAL78/pia-qbittorrent-docker?label=latest%20release)](https://github.com/GeorgeAL78/pia-qbittorrent-docker/releases)
 [![Beta](https://img.shields.io/github/v/release/GeorgeAL78/pia-qbittorrent-docker?include_prereleases&filter=*beta*&label=beta&color=orange)](https://github.com/GeorgeAL78/pia-qbittorrent-docker/releases?q=prerelease%3Atrue&expanded=true)
-[![qBittorrent](https://img.shields.io/badge/dynamic/regex?url=https%3A%2F%2Fraw.githubusercontent.com%2FGeorgeAL78%2Fpia-qbittorrent-docker%2Fmaster%2FDockerfile&search=release-%28%5Cd%2B%5C.%5Cd%2B%5C.%5Cd%2B%29&replace=%241&label=qBittorrent&color=2186c4&logo=qbittorrent)](https://github.com/qbittorrent/qBittorrent/releases)
+[![qBittorrent](https://img.shields.io/badge/dynamic/regex?url=https%3A%2F%2Fraw.githubusercontent.com%2FGeorgeAL78%2Fpia-qbittorrent-docker%2Fmaster%2FDockerfile&search=release-%28%5Cd%2B%5C.%5Cd%2B%5C.%5Cd%2B%29&replace=%241&label=qBittorrent%20stable&color=2186c4&logo=qbittorrent)](https://github.com/qbittorrent/qBittorrent/releases)
+[![qBittorrent beta](https://img.shields.io/badge/dynamic/regex?url=https%3A%2F%2Fraw.githubusercontent.com%2FGeorgeAL78%2Fpia-qbittorrent-docker%2Fbeta%2FDockerfile&search=release-%28%5B0-9A-Za-z.%5D%2B%29&replace=%241&label=qBittorrent%20beta&color=orange&logo=qbittorrent)](https://github.com/qbittorrent/qBittorrent/releases)
 [![Unraid CA](https://img.shields.io/badge/Unraid-Community%20Apps-orange)](https://ca.unraid.net/apps?q=pia-qbittorrent)
 
 [![Docker Pulls](https://img.shields.io/docker/pulls/gjergjk/pia-qbittorrent?logo=docker)](https://hub.docker.com/r/gjergjk/pia-qbittorrent)
@@ -93,16 +94,16 @@ The title-bar version comes from an `X-Docker-Version` response header this imag
 
 ## Components
 
-| Component | Version |
-|-----------|---------|
-| Alpine Linux | 3.24 |
-| qBittorrent | 5.2.3 |
-| libtorrent | 2.0.14 |
-| Boost | 1.92.0 |
-| OpenVPN | 2.7.7 |
-| WireGuard | 1.0.20260223 |
-| IPTables | 1.8.13 |
-| Python 3 | Alpine 3.24 default (required by qBittorrent search plugins) |
+| Component | Stable (`latest`) | Beta (`beta`) |
+|-----------|---------|---------|
+| Alpine Linux | 3.24 | same |
+| qBittorrent | 5.2.3 | 5.3.0beta1 |
+| libtorrent | 2.0.14 | 2.1.1 |
+| Boost | 1.92.0 | same |
+| OpenVPN | 2.7.7 | same |
+| WireGuard | 1.0.20260223 | same |
+| IPTables | 1.8.13 | same |
+| Python 3 | Alpine 3.24 default (required by qBittorrent search plugins) | same |
 
 ---
 
