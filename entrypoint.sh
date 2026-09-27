@@ -366,6 +366,59 @@ if [ -n "$PIA_USERNAME" ] || [ -n "$PIA_PASSWORD" ]; then
   printf "DONE\n"
 fi
 
+# Fetch a PIA token for the port-forward API into $piaToken. Returns 1, leaving the
+# previous token in place, if none came back.
+#
+# Only ever called with the tunnel UP: at startup after the VPN connects, and from
+# the monitor loop and reconnect path after tunnel_alive() has passed. The kill
+# switch then routes the request through the tunnel (measured: the token host
+# resolves "via ... dev tun0", and with the tunnel killed the same request cannot
+# even resolve). That is what separates this from the forbidden case - fetching a
+# token while the tunnel is DOWN, which needs a hole in the firewall.
+#
+# Fetched fresh rather than reused because PIA tokens expire after about a day, so a
+# retry that reused the startup token would be refused ("Login failed!") forever.
+#
+# But NOT fetched on every call: PIA rate-limits this endpoint per account (measured:
+# after a busy test hour it answered 429 {"code":"too_many_attempts"} for every
+# request). A token is reused while it is under PF_TOKEN_MAX_AGE, and replaced early
+# only if PIA refused a signature with "Login failed!" AND the token is over
+# PF_TOKEN_SUSPECT_AGE - a fresh token refused that way means a bad server, which a
+# new token cannot fix and which would otherwise cost a login every retry.
+#
+# "// empty" because jq -r prints the string "null" for a missing field, which is
+# not empty - the old check logged "Got PIA token" after a failed login.
+PF_TOKEN_MAX_AGE=43200       # 12h; PIA tokens last about a day
+PF_TOKEN_SUSPECT_AGE=3600    # 1h
+piaToken=""
+pf_token_time=0
+pf_token_err=""
+pf_msg=""
+pf_fetch_token() {
+  local t r age
+  age=$(( $(date +%s) - pf_token_time ))
+  if [ -n "$piaToken" ] && [ $age -lt $PF_TOKEN_MAX_AGE ]; then
+    case "$pf_msg" in
+      *"Login failed"*) [ $age -lt $PF_TOKEN_SUSPECT_AGE ] && return 0 ;;
+      *) return 0 ;;
+    esac
+  fi
+  r=$(curl --connect-timeout 8 --max-time 15 -s --location --request POST \
+        'https://www.privateinternetaccess.com/api/client/v2/token' \
+        --form "username=$(sed '1!d' /auth.conf)" \
+        --form "password=$(sed '2!d' /auth.conf)")
+  t=$(echo "$r" | jq -r '.token // empty' 2>/dev/null)
+  if [ -z "$t" ]; then
+    pf_token_err=$(echo "$r" | jq -r '.message // .code // empty' 2>/dev/null)
+    [ -z "$pf_token_err" ] && pf_token_err="no usable response"
+    return 1
+  fi
+  piaToken="$t"
+  pf_token_time=$(date +%s)
+  pf_token_err=""
+  printf " * Got PIA token\n"
+}
+
 ############################################
 #            VPN configuration
 ############################################
@@ -378,21 +431,24 @@ if [ -f /proc/net/if_inet6 ] && ( [ $(sysctl -n net.ipv6.conf.all.disable_ipv6) 
     sysctl -w net.ipv6.conf.default.disable_ipv6=1 >/dev/null 2>&1 || true
   fi
 
-  pia_gen=$(curl -s --connect-timeout 8 --max-time 20 -u "$(sed '1!d' /auth.conf):$(sed '2!d' /auth.conf)" \
-    "https://privateinternetaccess.com/gtoken/generateToken")
-
-  if [ "$(echo "$pia_gen" | jq -r '.status')" != "OK" ]; then
-    printf " [$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] getting token\n"
-    printf " =========================================\n"
-    printf " =======Check username and password=======\n"
-    printf " =========================================\n"
+  # PIA's own client scripts (pia-foss/manual-connections, get_token.sh) use this
+  # endpoint. The legacy https://privateinternetaccess.com/gtoken/generateToken URL
+  # inherited from upstream stopped answering on 2026-09-27 - it times out with and
+  # without credentials, from several networks, while every other PIA endpoint
+  # responds - and WireGuard containers then crash-looped on exit 3 with a message
+  # blaming the password. Measured: a token from this endpoint IS accepted by
+  # addKey ({"status":"OK","peer_ip":...}), so one endpoint covers both uses.
+  #
+  # Shared with the port-forward path rather than copied: pf_fetch_token() caches the
+  # token, so a WireGuard start now costs ONE login instead of two, which matters
+  # because PIA rate-limits logins per account.
+  if ! pf_fetch_token; then
+    printf " [$(date +'%Y-%m-%d %H:%M:%S')] [ERROR] PIA would not issue a token (%s)\n" "$pf_token_err"
+    printf "          If that says the login failed, check line 1 (username) and line 2 (password) of /auth.conf.\n"
+    printf "          Otherwise PIA's login service is unreachable - the container will retry when it restarts.\n"
     exit 3
   fi
-
-  piatoken=$(echo "$pia_gen" | jq -r '.token')
-  if [ ! -z $piatoken ]; then
-    printf " * Got PIA token\n"
-  fi
+  piatoken="$piaToken"
 
   privateKey="$(wg genkey)"
   if [ ! -z $privateKey ]; then
@@ -1189,57 +1245,6 @@ pf_bind() {
   return 1
 }
 
-# Fetch a PIA token for the port-forward API into $piaToken. Returns 1, leaving the
-# previous token in place, if none came back.
-#
-# Only ever called with the tunnel UP: at startup after the VPN connects, and from
-# the monitor loop and reconnect path after tunnel_alive() has passed. The kill
-# switch then routes the request through the tunnel (measured: the token host
-# resolves "via ... dev tun0", and with the tunnel killed the same request cannot
-# even resolve). That is what separates this from the forbidden case - fetching a
-# token while the tunnel is DOWN, which needs a hole in the firewall.
-#
-# Fetched fresh rather than reused because PIA tokens expire after about a day, so a
-# retry that reused the startup token would be refused ("Login failed!") forever.
-#
-# But NOT fetched on every call: PIA rate-limits this endpoint per account (measured:
-# after a busy test hour it answered 429 {"code":"too_many_attempts"} for every
-# request). A token is reused while it is under PF_TOKEN_MAX_AGE, and replaced early
-# only if PIA refused a signature with "Login failed!" AND the token is over
-# PF_TOKEN_SUSPECT_AGE - a fresh token refused that way means a bad server, which a
-# new token cannot fix and which would otherwise cost a login every retry.
-#
-# "// empty" because jq -r prints the string "null" for a missing field, which is
-# not empty - the old check logged "Got PIA token" after a failed login.
-PF_TOKEN_MAX_AGE=43200       # 12h; PIA tokens last about a day
-PF_TOKEN_SUSPECT_AGE=3600    # 1h
-piaToken=""
-pf_token_time=0
-pf_token_err=""
-pf_msg=""
-pf_fetch_token() {
-  local t r age
-  age=$(( $(date +%s) - pf_token_time ))
-  if [ -n "$piaToken" ] && [ $age -lt $PF_TOKEN_MAX_AGE ]; then
-    case "$pf_msg" in
-      *"Login failed"*) [ $age -lt $PF_TOKEN_SUSPECT_AGE ] && return 0 ;;
-      *) return 0 ;;
-    esac
-  fi
-  r=$(curl --connect-timeout 8 --max-time 15 -s --location --request POST \
-        'https://www.privateinternetaccess.com/api/client/v2/token' \
-        --form "username=$(sed '1!d' /auth.conf)" \
-        --form "password=$(sed '2!d' /auth.conf)")
-  t=$(echo "$r" | jq -r '.token // empty' 2>/dev/null)
-  if [ -z "$t" ]; then
-    pf_token_err=$(echo "$r" | jq -r '.message // .code // empty' 2>/dev/null)
-    [ -z "$pf_token_err" ] && pf_token_err="no usable response"
-    return 1
-  fi
-  piaToken="$t"
-  pf_token_time=$(date +%s)
-  pf_token_err=""
-}
 
 # ONE getSignature request through the tunnel. Sets pia_sig, pf_ec, pf_status and
 # pf_msg; returns 0 only on status OK. Startup (6 tries), pf_resign_and_bind (1) and
@@ -1365,7 +1370,6 @@ if is_enabled "$PORT_FORWARDING"; then
     printf "[$(date +'%Y-%m-%d %H:%M:%S')] [WARNING] Could not get a port-forwarding token from PIA (%s)\n" "$pf_token_err"
     pf_pending=true
   else
-    printf " * Got PIA token\n"
     # Right after the tunnel comes up the PF API can need a few seconds before it
     # will issue a signature (route settling on our side, peer registration on
     # PIA's side), so retry instead of giving up on the first try.
