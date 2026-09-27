@@ -179,7 +179,7 @@ Available in **Community Applications**: search for `pia-qbittorrent`.
 This maps qBittorrent to Unraid's `nobody:users` so downloaded files are accessible from SMB shares.
 
 - **Storage:** map `/downloads` to your share (e.g. `/mnt/user/downloads/`) and `/config` to appdata (e.g. `/mnt/user/appdata/pia-qbittorrent/`).
-- **Network:** Bridge and custom bridge networks both work; the VPN tunnel runs inside the container either way. Avoid **Host** networking, as the kill switch would then firewall the Unraid host itself.
+- **Network:** Bridge and custom bridge networks both work; the VPN tunnel runs inside the container either way. Avoid **Host** networking: the container would then share the Unraid server's own network stack, so the kill switch's firewall rules, routes and IPv6 settings would be applied to the server — including flushing the iptables rules Docker itself relies on, which breaks networking for other containers.
 - **Extra Parameters:** keep `--cap-add=NET_ADMIN --restart unless-stopped`.
 - **Other containers** (Sonarr, Radarr, etc.): if they are on a different Docker network and cannot reach the Web UI, add their subnet to `EXTRA_SUBNETS`, e.g. `172.18.0.0/16`.
 
