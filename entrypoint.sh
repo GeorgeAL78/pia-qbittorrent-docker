@@ -332,13 +332,38 @@ fi
 # Best option is to mount a secure file using docker
 # -v /auth-file.conf:/auth.conf
 #####################################################
+# Is /auth.conf a file the user mounted, or one this container wrote itself on an
+# earlier start? It matters: a self-written /auth.conf lives in the container's own
+# filesystem, NOT in /config, so it disappears whenever the container is RECREATED -
+# which is exactly what an Unraid image update does. Telling such a user to remove
+# PIA_USERNAME/PIA_PASSWORD (as this did on every start) sets up a failure on their
+# next update, with no credentials left anywhere. A bind mount shows up in this
+# container's mount table; a file it wrote does not.
+auth_is_mounted() {
+  grep -q " /auth.conf " /proc/self/mountinfo 2>/dev/null
+}
+
 if [ -f /auth.conf ]; then
   if [ "$(wc -l < /auth.conf)" -gt 0 ] && [ "$(wc -c < /auth.conf)" -gt 10 ]; then
     printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] /auth.conf file looks good\n"
-    if [ -n "$PIA_USERNAME" ] || [ -n "$PIA_PASSWORD" ]; then
-      printf "  * Using credentials from /auth.conf\n"
-      printf "  * Ignoring environment variables PIA_USERNAME and PIA_PASSWORD\n"
-      printf "[Warning] Please remove PIA_USERNAME and PIA_PASSWORD environment variables\n"
+    if auth_is_mounted; then
+      if [ -n "$PIA_USERNAME" ] || [ -n "$PIA_PASSWORD" ]; then
+        printf "  * Using credentials from the /auth.conf file you mounted\n"
+        printf "  * Ignoring environment variables PIA_USERNAME and PIA_PASSWORD\n"
+        printf "[Warning] PIA_USERNAME and PIA_PASSWORD can now be removed from the container settings\n"
+      fi
+    else
+      printf "  * Using credentials from /auth.conf, written from your settings on an earlier start\n"
+      if [ -n "$PIA_USERNAME" ] || [ -n "$PIA_PASSWORD" ]; then
+        printf "  * KEEP PIA_USERNAME and PIA_PASSWORD set: this file is inside the container, not in\n"
+        printf "    /config, so it is lost whenever the container is recreated (an image update does that).\n"
+        printf "    To store them outside the container instead, mount your own file as /auth.conf.\n"
+      else
+        printf "[Warning] PIA_USERNAME and PIA_PASSWORD are no longer set, and this /auth.conf lives inside\n"
+        printf "          the container rather than in /config - recreating the container (for example an\n"
+        printf "          image update) will leave it with no credentials. Set them again, or mount your\n"
+        printf "          own file as /auth.conf.\n"
+      fi
     fi
   else
     printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Please check /auth.conf file. Check line 1 is your username and line 2 is your password\n"
@@ -349,7 +374,9 @@ else
   printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Unable to find /auth.conf file, creating it from environment variables\n"
   exitIfUnset PIA_USERNAME
   exitIfUnset PIA_PASSWORD
-  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Writing PIA_USERNAME and PIA_PASSWORD to protected file /auth.conf..."
+  printf "[$(date +'%Y-%m-%d %H:%M:%S')] [INFO] Writing PIA_USERNAME and PIA_PASSWORD to protected file /auth.conf\n"
+  printf "          (inside the container, so keep those settings - mount your own file as /auth.conf to\n"
+  printf "          keep credentials outside it)..."
   echo "$PIA_USERNAME" > /auth.conf
   exitOnError $?
   echo "$PIA_PASSWORD" >> /auth.conf
