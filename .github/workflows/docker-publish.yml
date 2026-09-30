@@ -112,8 +112,8 @@ jobs:
             gjergjk/pia-qbittorrent
             ghcr.io/georgeal78/pia-qbittorrent
           tags: |
-            # A tag containing "beta" (e.g. v5.3.0-beta1-1, cut from the beta branch)
-            # publishes :beta and its own version tag, and must NEVER move :latest -
+            # A tag containing "beta" (e.g. v5.3.0-rc1-beta-1, cut from the beta branch)
+            # publishes only :beta, and must NEVER move :latest -
             # every Unraid template and compose file tracks :latest, so a beta landing
             # there would silently put every user on pre-release qBittorrent.
             type=raw,value=latest,enable=${{ !contains(github.ref_name, 'beta') }}
@@ -123,12 +123,11 @@ jobs:
             # time) never interleaves pre-releases with stable versions. Each beta is
             # still a GitHub pre-release.
             type=semver,pattern={{version}},enable=${{ !contains(github.ref_name, 'beta') }}
-            # Floating 5 / 5.2. NOT type=semver: semver reads v5.2.4-1 as a PRE-release
-            # of 5.2.4, and metadata-action never moves {{major}}/{{minor}} for those - so
-            # :5.2 sat on plain 5.2.3 through all 29 fix releases. These accept vX.Y.Z and
-            # vX.Y.Z-N only; anything with letters (every beta) does not match.
-            type=match,pattern=^v(\d+\.\d+)\.\d+(-\d+)?$,group=1
-            type=match,pattern=^v(\d+)\.\d+\.\d+(-\d+)?$,group=1
+            # No floating 5 / 5.2 tags, deliberately (removed 2026-09-30): latest plus
+            # exact versions are the only tags. Do NOT add type=semver {{major}} or
+            # {{major}}.{{minor}} back - semver reads v5.2.4-1 as a PRE-release of 5.2.4
+            # and never moves those for it, which left :5.2 on plain 5.2.3 through all 29
+            # fix releases.
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
