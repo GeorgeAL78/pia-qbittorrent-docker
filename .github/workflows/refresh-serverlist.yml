@@ -27,7 +27,7 @@ jobs:
     name: Fetch and commit if changed
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Fetch PIA's current server list
         run: |
