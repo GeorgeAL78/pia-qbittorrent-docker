@@ -1,9 +1,12 @@
 name: Component check
 
-# Dependabot can't see the versions pinned inside the Dockerfile's RUN steps
-# (qBittorrent, libtorrent, Boost, Ninja). This compares them with the latest
-# upstream releases weekly and opens an issue, assigned to the repo owner,
-# for each newer version. The Alpine base image is covered by Dependabot.
+# Weekly check of what Dependabot can't see, opening an issue (assigned to the
+# repo owner) for each newer version:
+#   - qBittorrent, libtorrent (2.0.x), Boost and Ninja pinned on master
+#   - qBittorrent and libtorrent pre-releases pinned on the beta branch
+#   - OpenVPN, WireGuard tools, iptables and Qt6 in the published image, when
+#     Alpine has a newer build (a rebuild picks it up)
+# The Alpine base image itself is covered by Dependabot.
 
 on:
   schedule:
