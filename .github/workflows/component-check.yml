@@ -1,0 +1,25 @@
+name: Component check
+
+# Dependabot can't see the versions pinned inside the Dockerfile's RUN steps
+# (qBittorrent, libtorrent, Boost, Ninja). This compares them with the latest
+# upstream releases weekly and opens an issue, assigned to the repo owner,
+# for each newer version. The Alpine base image is covered by Dependabot.
+
+on:
+  schedule:
+    - cron: '17 9 * * 1'   # Mondays 09:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Compare pinned components with upstream releases
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/check-components.py Dockerfile
