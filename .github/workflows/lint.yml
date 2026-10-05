@@ -19,7 +19,7 @@ jobs:
     name: Lint and validate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Hard failure: a syntax error here breaks every container on start.
       # entrypoint.sh targets busybox ash, so check with dash (POSIX sh) too.
