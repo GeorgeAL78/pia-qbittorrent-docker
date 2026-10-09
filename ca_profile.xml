@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <CommunityApplications>
-  <Profile>A Docker container combining qBittorrent with Private Internet Access (PIA) VPN, supporting both WireGuard and OpenVPN. Built on Alpine Linux for a minimal footprint. Fork of j4ym0/pia-qbittorrent with bug fixes and additional features including fixed WireGuard region selection, correct UID/GID handling for Unraid file ownership, configurable UMASK, IPv6 kill switch, and multi-arch (amd64 + arm64) support. Pair with the Windows 11 desktop app: https://github.com/GeorgeAL78/qbittorrent-desktop</Profile>
+  <Profile>Docker apps for Unraid by GeorgeK. qBittorrent + Private Internet Access VPN: qBittorrent behind a WireGuard or OpenVPN tunnel with a kill switch, port forwarding and automatic recovery, built on Alpine Linux for amd64 and arm64 (https://github.com/GeorgeAL78/pia-qbittorrent-docker). NetLens: a self-hosted dashboard for UniFi networks with per-device and per-app traffic, Wi-Fi and access point health, and security events; not affiliated with Ubiquiti (https://github.com/GeorgeAL78/netlens).</Profile>
   <Icon>https://raw.githubusercontent.com/GeorgeAL78/pia-qbittorrent-docker/master/readme/icon.png</Icon>
-  <WebPage>https://github.com/GeorgeAL78/pia-qbittorrent-docker</WebPage>
-  <Forum>https://github.com/GeorgeAL78/pia-qbittorrent-docker/issues</Forum>
+  <WebPage>https://github.com/GeorgeAL78</WebPage>
+  <Forum>https://forums.unraid.net/profile/78525-georgek/</Forum>
 </CommunityApplications>

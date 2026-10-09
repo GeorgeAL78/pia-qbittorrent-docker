@@ -63,7 +63,7 @@ jobs:
 
       - name: Validate Unraid templates (XML must parse)
         run: |
-          for f in pia-qbittorrent.xml ca_profile.xml; do
+          for f in pia-qbittorrent.xml ca_profile.xml netlens.xml; do
             [ -f "$f" ] || continue
             python3 -c "import xml.etree.ElementTree as ET,sys; ET.parse(sys.argv[1]); print('XML OK: '+sys.argv[1])" "$f"
           done

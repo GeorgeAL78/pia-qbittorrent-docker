@@ -1,0 +1,52 @@
+name: Sync app templates
+
+# Copies other projects' Unraid templates into this repository, which is the one
+# registered with Community Applications. Each template's TemplateURL still points
+# at its own project, so installed containers update from the source.
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-templates
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Fetch NetLens template
+        run: |
+          curl -fsSL --retry 3 --max-time 30 \
+            https://raw.githubusercontent.com/GeorgeAL78/netlens/main/unraid/netlens.xml \
+            -o /tmp/netlens.xml
+          python3 -c "
+          import sys, xml.etree.ElementTree as ET
+          r = ET.parse('/tmp/netlens.xml').getroot()
+          if r.tag != 'Container':
+              sys.exit('not a Container template: ' + r.tag)
+          for k in ('Name', 'Repository', 'TemplateURL'):
+              if not (r.findtext(k) or '').strip():
+                  sys.exit('missing ' + k)
+          print('valid:', r.findtext('Name'), r.findtext('Repository'))
+          "
+          cp /tmp/netlens.xml netlens.xml
+
+      - name: Commit if changed
+        run: |
+          if [ -z "$(git status --porcelain -- netlens.xml)" ]; then
+            echo "No change"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add netlens.xml
+          git commit -m "Sync NetLens template"
+          git push
