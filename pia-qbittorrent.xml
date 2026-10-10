@@ -23,7 +23,7 @@ Components:&#13;&#10;• qBittorrent 5.2.4 with libtorrent 2.0.15&#13;&#10;• A
 Custom bridge networks work fine (the VPN tunnel runs inside the container either way). Avoid Host networking: the container would then share the Unraid server's own network stack, so the kill switch's firewall rules, routes and IPv6 settings would be applied to the server — including flushing the iptables rules Docker itself relies on, which breaks networking for other containers.&#13;&#10;&#13;&#10;Extra Parameters must keep --cap-add=NET_ADMIN (the VPN and kill switch need it) and --restart unless-stopped (lets the container restart itself to recover).&#13;&#10;&#13;&#10;Pair with the Windows 11 desktop app: https://github.com/GeorgeAL78/qbittorrent-desktop&#13;&#10;&#13;&#10;Fork of j4ym0/pia-qbittorrent with bug fixes and extra features.</Overview>
   <Category>Downloaders:</Category>
   <WebUI>http://[IP]:[PORT:8888]/</WebUI>
-  <TemplateURL>https://raw.githubusercontent.com/GeorgeAL78/pia-qbittorrent-docker/master/pia-qbittorrent.xml</TemplateURL>
+  <TemplateURL>https://raw.githubusercontent.com/GeorgeAL78/unraid-templates/main/pia-qbittorrent.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/GeorgeAL78/pia-qbittorrent-docker/master/readme/icon.png</Icon>
   <ExtraParams>--cap-add=NET_ADMIN --restart unless-stopped</ExtraParams>
   <Config Name="Web UI Port" Target="8888" Default="8888" Mode="tcp" Description="qBittorrent Web UI port" Type="Port" Display="always" Required="true" Mask="false">8888</Config>
