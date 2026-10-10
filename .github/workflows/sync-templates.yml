@@ -1,8 +1,10 @@
 name: Sync app templates
 
-# Copies other projects' Unraid templates into this repository, which is the one
-# registered with Community Applications. Each template's TemplateURL still points
-# at its own project, so installed containers update from the source.
+# Keeps the copies of the Unraid templates in this repository current. Containers
+# installed from here read their TemplateURL from these files, so they must follow
+# the sources:
+#   pia-qbittorrent.xml  <- GeorgeAL78/unraid-templates (main)
+#   netlens.xml          <- GeorgeAL78/netlens (main, unraid/netlens.xml)
 
 on:
   schedule:
@@ -22,31 +24,44 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Fetch NetLens template
+      - name: Fetch and validate templates
         run: |
-          curl -fsSL --retry 3 --max-time 30 \
-            https://raw.githubusercontent.com/GeorgeAL78/netlens/main/unraid/netlens.xml \
-            -o /tmp/netlens.xml
-          python3 -c "
+          fetch() {
+            # $1 = file in this repo, $2 = source URL, $3 = expected <Name>, $4 = required TemplateURL ('' = any)
+            curl -fsSL --retry 3 --max-time 30 "$2" -o "/tmp/$1"
+            python3 -c "
           import sys, xml.etree.ElementTree as ET
-          r = ET.parse('/tmp/netlens.xml').getroot()
+          f, name, url = sys.argv[1], sys.argv[2], sys.argv[3]
+          r = ET.parse(f).getroot()
           if r.tag != 'Container':
-              sys.exit('not a Container template: ' + r.tag)
+              sys.exit(f + ': not a Container template: ' + r.tag)
           for k in ('Name', 'Repository', 'TemplateURL'):
               if not (r.findtext(k) or '').strip():
-                  sys.exit('missing ' + k)
-          print('valid:', r.findtext('Name'), r.findtext('Repository'))
-          "
-          cp /tmp/netlens.xml netlens.xml
+                  sys.exit(f + ': missing ' + k)
+          if r.findtext('Name').strip() != name:
+              sys.exit(f + ': unexpected Name ' + r.findtext('Name'))
+          if url and r.findtext('TemplateURL').strip() != url:
+              sys.exit(f + ': unexpected TemplateURL ' + r.findtext('TemplateURL'))
+          print('valid:', f, r.findtext('Repository'), r.findtext('TemplateURL'))
+          " "/tmp/$1" "$3" "$4"
+            cp "/tmp/$1" "$1"
+          }
+          fetch pia-qbittorrent.xml \
+            https://raw.githubusercontent.com/GeorgeAL78/unraid-templates/main/pia-qbittorrent.xml \
+            pia-qbittorrent \
+            https://raw.githubusercontent.com/GeorgeAL78/unraid-templates/main/pia-qbittorrent.xml
+          fetch netlens.xml \
+            https://raw.githubusercontent.com/GeorgeAL78/netlens/main/unraid/netlens.xml \
+            netlens ''
 
       - name: Commit if changed
         run: |
-          if [ -z "$(git status --porcelain -- netlens.xml)" ]; then
+          if [ -z "$(git status --porcelain -- pia-qbittorrent.xml netlens.xml)" ]; then
             echo "No change"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add netlens.xml
-          git commit -m "Sync NetLens template"
+          git add pia-qbittorrent.xml netlens.xml
+          git commit -m "Sync templates"
           git push
