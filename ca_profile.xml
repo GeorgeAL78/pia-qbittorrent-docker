@@ -1,7 +1,0 @@
-<?xml version="1.0"?>
-<CommunityApplications>
-  <Profile>Docker apps for Unraid by GeorgeK: small, self-hosted containers built on Alpine Linux for amd64 and arm64, each with its own documentation and issue tracker on GitHub (https://github.com/GeorgeAL78). Support: open an issue on the app&apos;s GitHub repository.</Profile>
-  <Icon>https://avatars.githubusercontent.com/u/165690962?v=4</Icon>
-  <WebPage>https://github.com/GeorgeAL78</WebPage>
-  <Forum>https://forums.unraid.net/profile/78525-georgek/</Forum>
-</CommunityApplications>
