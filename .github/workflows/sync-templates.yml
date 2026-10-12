@@ -1,10 +1,8 @@
 name: Sync app templates
 
-# Keeps the copies of the Unraid templates in this repository current. Containers
-# installed from here read their TemplateURL from these files, so they must follow
-# the sources:
-#   pia-qbittorrent.xml  <- GeorgeAL78/unraid-templates (main)
-#   netlens.xml          <- GeorgeAL78/netlens (main, unraid/netlens.xml)
+# Keeps this repository's copy of the Unraid template identical to the one in
+# GeorgeAL78/unraid-templates (main). Containers installed from here read their
+# TemplateURL from this file, so it must follow the source.
 
 on:
   schedule:
@@ -50,18 +48,15 @@ jobs:
             https://raw.githubusercontent.com/GeorgeAL78/unraid-templates/main/pia-qbittorrent.xml \
             pia-qbittorrent \
             https://raw.githubusercontent.com/GeorgeAL78/unraid-templates/main/pia-qbittorrent.xml
-          fetch netlens.xml \
-            https://raw.githubusercontent.com/GeorgeAL78/netlens/main/unraid/netlens.xml \
-            netlens ''
 
       - name: Commit if changed
         run: |
-          if [ -z "$(git status --porcelain -- pia-qbittorrent.xml netlens.xml)" ]; then
+          if [ -z "$(git status --porcelain -- pia-qbittorrent.xml)" ]; then
             echo "No change"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add pia-qbittorrent.xml netlens.xml
+          git add pia-qbittorrent.xml
           git commit -m "Sync templates"
           git push
