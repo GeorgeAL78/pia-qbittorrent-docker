@@ -3,9 +3,7 @@ FROM alpine:3.24
 
 LABEL org.opencontainers.image.title="pia-qbittorrent" org.opencontainers.image.description="qBittorrent + PIA VPN (WireGuard/OpenVPN) with IPv4/IPv6 kill switch, port forwarding, and multi-arch support" org.opencontainers.image.source="https://github.com/GeorgeAL78/pia-qbittorrent-docker" org.opencontainers.image.licenses="GPL-3.0-or-later"
 
-ENV PIA_USERNAME= \
-    PIA_PASSWORD= \
-    PIA_REGION="netherlands" \
+ENV PIA_REGION="netherlands" \
     VPN_CLIENT="openvpn" \
     PORT_FORWARDING=true \
     LEGACY_IPTABLES=false \
