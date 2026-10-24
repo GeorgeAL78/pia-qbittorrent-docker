@@ -3,9 +3,7 @@ FROM alpine:3.24
 
 LABEL org.opencontainers.image.title="pia-qbittorrent" org.opencontainers.image.description="qBittorrent + PIA VPN (WireGuard/OpenVPN) with IPv4/IPv6 kill switch, port forwarding, and multi-arch support" org.opencontainers.image.source="https://github.com/GeorgeAL78/pia-qbittorrent-docker" org.opencontainers.image.licenses="GPL-3.0-or-later"
 
-ENV PIA_USERNAME= \
-    PIA_PASSWORD= \
-    PIA_REGION="netherlands" \
+ENV PIA_REGION="netherlands" \
     VPN_CLIENT="openvpn" \
     PORT_FORWARDING=true \
     LEGACY_IPTABLES=false \
@@ -47,7 +45,7 @@ RUN apk add --no-cache -t .build-deps autoconf automake build-base cmake git lib
     -D CMAKE_INSTALL_PREFIX="/usr/local" && \
   cmake --build build -j $(nproc) && \
   cmake --install build && \
-  curl -sSL --retry 5 https://api.github.com/repos/qbittorrent/qBittorrent/tarball/release-5.3.0rc1 | tar xzC /tmp && \
+  curl -sSL --retry 5 https://api.github.com/repos/qbittorrent/qBittorrent/tarball/release-5.3.0 | tar xzC /tmp && \
 	cd /tmp/*qBittorrent* && \
   cmake -Wno-dev -G Ninja -B build \
     -D CMAKE_BUILD_TYPE="release" \

@@ -8,6 +8,8 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    assignees:
+      - "GeorgeAL78"
     groups:
       github-actions:
         patterns:
@@ -25,6 +27,8 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    assignees:
+      - "GeorgeAL78"
     commit-message:
       prefix: "docker"
     labels:

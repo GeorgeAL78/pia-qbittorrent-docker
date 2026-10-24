@@ -1,0 +1,62 @@
+name: Sync app templates
+
+# Keeps this repository's copy of the Unraid template identical to the one in
+# GeorgeAL78/unraid-templates (main). Containers installed from here read their
+# TemplateURL from this file, so it must follow the source.
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-templates
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Fetch and validate templates
+        run: |
+          fetch() {
+            # $1 = file in this repo, $2 = source URL, $3 = expected <Name>, $4 = required TemplateURL ('' = any)
+            curl -fsSL --retry 3 --max-time 30 "$2" -o "/tmp/$1"
+            python3 -c "
+          import sys, xml.etree.ElementTree as ET
+          f, name, url = sys.argv[1], sys.argv[2], sys.argv[3]
+          r = ET.parse(f).getroot()
+          if r.tag != 'Container':
+              sys.exit(f + ': not a Container template: ' + r.tag)
+          for k in ('Name', 'Repository', 'TemplateURL'):
+              if not (r.findtext(k) or '').strip():
+                  sys.exit(f + ': missing ' + k)
+          if r.findtext('Name').strip() != name:
+              sys.exit(f + ': unexpected Name ' + r.findtext('Name'))
+          if url and r.findtext('TemplateURL').strip() != url:
+              sys.exit(f + ': unexpected TemplateURL ' + r.findtext('TemplateURL'))
+          print('valid:', f, r.findtext('Repository'), r.findtext('TemplateURL'))
+          " "/tmp/$1" "$3" "$4"
+            cp "/tmp/$1" "$1"
+          }
+          fetch pia-qbittorrent.xml \
+            https://raw.githubusercontent.com/GeorgeAL78/unraid-templates/main/pia-qbittorrent.xml \
+            pia-qbittorrent \
+            https://raw.githubusercontent.com/GeorgeAL78/unraid-templates/main/pia-qbittorrent.xml
+
+      - name: Commit if changed
+        run: |
+          if [ -z "$(git status --porcelain -- pia-qbittorrent.xml)" ]; then
+            echo "No change"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pia-qbittorrent.xml
+          git commit -m "Sync templates"
+          git push

@@ -1,0 +1,28 @@
+name: Component check
+
+# Weekly check of what Dependabot can't see, opening an issue (assigned to the
+# repo owner) for each newer version:
+#   - qBittorrent, libtorrent (2.0.x), Boost and Ninja pinned on master
+#   - qBittorrent and libtorrent pre-releases pinned on the beta branch
+#   - OpenVPN, WireGuard tools, iptables and Qt6 in the published image, when
+#     Alpine has a newer build (a rebuild picks it up)
+# The Alpine base image itself is covered by Dependabot.
+
+on:
+  schedule:
+    - cron: '17 9 * * 1'   # Mondays 09:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Compare pinned components with upstream releases
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/check-components.py Dockerfile
