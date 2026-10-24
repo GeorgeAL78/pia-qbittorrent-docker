@@ -2,7 +2,7 @@
 """Weekly component check. Opens one issue per newer version, assigned to the
 repository owner, for:
 
-  * master's Dockerfile pins: qBittorrent, libtorrent (2.0.x), Boost, Ninja
+  * master's Dockerfile pins: qBittorrent, libtorrent (2.1.x), Boost, Ninja
   * the beta branch's pins: qBittorrent and libtorrent including pre-releases
     (and Boost / Ninja when beta pins them differently from master)
   * the unpinned Alpine packages in the published :latest image: OpenVPN,
@@ -76,8 +76,8 @@ def latest(repo, tag_re, prerelease):
 MASTER = [
     ('qBittorrent', r'qBittorrent/tarball/release-(\d+\.\d+\.\d+)\b',
      'qbittorrent/qBittorrent', r'release-(\d+\.\d+\.\d+)'),
-    ('libtorrent', r'libtorrent/releases/download/v(2\.0\.\d+)/',          # stays on 2.0.x
-     'arvidn/libtorrent', r'v(2\.0\.\d+)'),
+    ('libtorrent', r'libtorrent/releases/download/v(2\.1\.\d+)/',          # stays on 2.1.x
+     'arvidn/libtorrent', r'v(2\.1\.\d+)'),
     ('Boost', r'boost/releases/download/boost-(\d+\.\d+\.\d+(?:-\d+)?)/',
      'boostorg/boost', r'boost-(\d+\.\d+\.\d+(?:-\d+)?)'),
     ('Ninja', r'ninja/archive/refs/tags/v(\d+\.\d+\.\d+)\.tar',
