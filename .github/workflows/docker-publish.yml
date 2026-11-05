@@ -86,10 +86,30 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # Starts qBittorrent from the amd64 image with no network (no VPN, no PIA login)
+  # and checks versions and the settings the entrypoint writes. Nothing is tagged
+  # or released unless it passes: until "merge" the images exist only by digest.
+  smoke:
+    name: Smoke test
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Download amd64 digest
+        uses: actions/download-artifact@v8
+        with:
+          name: digests-linux-amd64
+          path: /tmp/digests
+
+      - name: Run qBittorrent without network
+        run: sh scripts/smoke-test.sh "${{ env.REGISTRY_IMAGE }}@sha256:$(ls /tmp/digests)" Dockerfile
+
   merge:
     name: Merge manifests and release
     runs-on: ubuntu-latest
-    needs: [build]
+    needs: [build, smoke]
     permissions:
       contents: write
       packages: write
@@ -161,3 +181,19 @@ jobs:
           # Beta releases are GitHub pre-releases and never take the "Latest" badge.
           prerelease: ${{ contains(github.ref_name, 'beta') }}
           make_latest: ${{ contains(github.ref_name, 'beta') && 'false' || 'true' }}
+
+      - name: Checkout code (Docker Hub description)
+        if: startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, 'beta')
+        uses: actions/checkout@v7
+
+      # Docker Hub accepts a description update only from a password or an access token
+      # with admin scope; if the secret cannot, the image release above still stands.
+      - name: Update Docker Hub description
+        if: startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, 'beta')
+        continue-on-error: true
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+          repository: ${{ env.REGISTRY_IMAGE }}
+          readme-filepath: ./dockerhub/README.md

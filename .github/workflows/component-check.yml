@@ -2,7 +2,7 @@ name: Component check
 
 # Weekly check of what Dependabot can't see, opening an issue (assigned to the
 # repo owner) for each newer version:
-#   - qBittorrent, libtorrent (2.0.x), Boost and Ninja pinned on master
+#   - qBittorrent, libtorrent (2.1.x), Boost and Ninja pinned on master
 #   - qBittorrent and libtorrent pre-releases pinned on the beta branch
 #   - OpenVPN, WireGuard tools, iptables and Qt6 in the published image, when
 #     Alpine has a newer build (a rebuild picks it up)

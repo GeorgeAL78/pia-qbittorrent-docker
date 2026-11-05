@@ -1,0 +1,38 @@
+name: Promote release
+
+# Releases a stable qBittorrent version as :latest: bumps master's pin, updates the
+# README and dockerhub/README.md, tags vX.Y.Z and starts the publish workflow.
+# Defaults to the version on the beta branch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'qBittorrent version, e.g. 5.3.1 (empty = the beta branch version)'
+        type: string
+        default: ''
+      dry_run:
+        description: 'Only print what would happen'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+  issues: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Promote to :latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+          VERSION: ${{ inputs.version }}
+        run: python3 scripts/auto-release.py promote "$VERSION"
