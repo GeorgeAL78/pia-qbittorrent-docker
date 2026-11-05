@@ -1,0 +1,35 @@
+name: Auto release (beta)
+
+# Every 6 hours: when qBittorrent publishes a release newer than the beta branch's
+# pin (pre-releases included), bump the pin on beta, tag it and publish :beta.
+# :latest only moves through the "Promote release" workflow.
+
+on:
+  schedule:
+    - cron: '47 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Only print what would happen'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+  issues: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  beta:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Bump beta to the newest qBittorrent release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+        run: python3 scripts/auto-release.py beta

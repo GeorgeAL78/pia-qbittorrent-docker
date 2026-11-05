@@ -35,7 +35,8 @@ def api(path, method='GET', body=None):
     if TOKEN:
         req.add_header('Authorization', 'Bearer ' + TOKEN)
     with urllib.request.urlopen(req, timeout=30) as r:
-        return json.load(r)
+        data = r.read()
+    return json.loads(data) if data else None   # some calls (e.g. a workflow dispatch) return 204
 
 
 _release_cache = {}
