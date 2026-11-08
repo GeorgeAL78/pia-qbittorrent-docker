@@ -1,8 +1,13 @@
-name: Auto release (beta)
+name: Auto release
 
-# Every 6 hours: when qBittorrent publishes a release newer than the beta branch's
-# pin (pre-releases included), bump the pin on beta, tag it and publish :beta.
-# :latest only moves through the "Promote release" workflow.
+# Every 6 hours:
+#   beta   - qBittorrent published anything newer than the beta branch's pin
+#            (pre-releases included): bump beta, tag it, publish :beta.
+#   stable - :latest is out of date: a newer stable qBittorrent, libtorrent 2.1.x,
+#            Boost or Ninja, a newer Alpine point release, or newer Alpine packages
+#            than the published image has. Bumps master's pins if needed, tags
+#            vX.Y.Z (new qBittorrent) or vX.Y.Z-N (rebuild) and publishes :latest.
+# The publish workflow lints, builds and smoke-tests before anything is pushed.
 
 on:
   schedule:
@@ -24,12 +29,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  beta:
+  release:
     runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
     steps:
       - uses: actions/checkout@v7
-      - name: Bump beta to the newest qBittorrent release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+      - name: Beta - newest qBittorrent release
         run: python3 scripts/auto-release.py beta
+      - name: Stable - release :latest when anything in it is out of date
+        run: python3 scripts/auto-release.py stable
