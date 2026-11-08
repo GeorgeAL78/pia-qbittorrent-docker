@@ -167,8 +167,8 @@ Image tags follow the bundled qBittorrent version. Fixes released between qBitto
 
 ## What's new
 
-**5.3.0-1** (latest)
-- Rebuilt with Alpine 3.24.4 and current Alpine packages.
+**5.3.0-2** (latest)
+- Fixed: the version header and the HOSTHEADERVALIDATION and CSRFPROTECTION settings apply again on configs saved by qBittorrent 5.3.
 
 ### Recent highlights
 

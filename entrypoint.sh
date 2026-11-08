@@ -1059,20 +1059,56 @@ printf " * Setting qBittorrent network interface to $VPN_DEVICE\n"
 sed -i "s/Session\\\Interface=.*/Session\\\Interface=$VPN_DEVICE/g" /config/qBittorrent/config/qBittorrent.conf
 sed -i "s/Session\\\InterfaceName=.*/Session\\\InterfaceName=$VPN_DEVICE/g" /config/qBittorrent/config/qBittorrent.conf
 
+# Set one Web UI setting in qBittorrent.conf, in whichever layout the file uses.
+# qBittorrent 5.3 moved these from "[Preferences]" as "WebUI\Key=" to a "[WebUI]"
+# section with plain "Key=" names, migrating them on its first save. A sed on the old
+# name then matched nothing, so after the first 5.3 start every write here was silently
+# lost - X-Docker-Version stayed at whichever version did the migration, and later
+# HOSTHEADERVALIDATION / CSRFPROTECTION changes were ignored. Adds the key to its
+# section if it is missing. awk, not sed, so the value needs no escaping.
+qbt_webui_set() {
+  qws_conf=/config/qBittorrent/config/qBittorrent.conf
+  awk -v key="$1" -v val="$2" '
+    { line[NR] = $0; if ($0 == "[WebUI]") newlayout = 1 }
+    END {
+      sect = newlayout ? "[WebUI]" : "[Preferences]"
+      name = newlayout ? key : "WebUI\\" key
+      cur = ""; done = 0; seen = 0
+      for (i = 1; i <= NR; i++) {
+        l = line[i]
+        if (l ~ /^\[/) {
+          if (cur == sect && !done) { print name "=" val; done = 1 }
+          cur = l
+          if (l == sect) seen = 1
+        } else if (cur == sect && index(l, name "=") == 1) {
+          if (!done) print name "=" val
+          done = 1
+          continue
+        }
+        print l
+      }
+      if (!done) {
+        if (!seen) print sect
+        print name "=" val
+      }
+    }' "$qws_conf" > "$qws_conf.tmp" && cat "$qws_conf.tmp" > "$qws_conf"
+  rm -f "$qws_conf.tmp"
+}
+
 if [ "${HOSTHEADERVALIDATION}" = "true" ] || [ "${HOSTHEADERVALIDATION}" = "false" ]; then
   printf " * Updating HostHeaderValidation to $HOSTHEADERVALIDATION\n"
-  sed -i "s/WebUI\\\HostHeaderValidation=\(true\|false\)/WebUI\\\HostHeaderValidation=$HOSTHEADERVALIDATION/g" /config/qBittorrent/config/qBittorrent.conf
+  qbt_webui_set HostHeaderValidation "$HOSTHEADERVALIDATION"
 fi
 
 if [ "${CSRFPROTECTION}" = "true" ] || [ "${CSRFPROTECTION}" = "false" ]; then
   printf " * Updating CSRFProtection to $CSRFPROTECTION\n"
-  sed -i "s/WebUI\\\CSRFProtection=\(true\|false\)/WebUI\\\CSRFProtection=$CSRFPROTECTION/g" /config/qBittorrent/config/qBittorrent.conf
+  qbt_webui_set CSRFProtection "$CSRFPROTECTION"
 fi
 
 # Publish the image version as an X-Docker-Version response header (read by qbittorrent-desktop)
 printf " * Publishing image version %s via X-Docker-Version header\n" "${CONTAINER_VERSION:-unknown}"
-sed -i "s/WebUI\\\CustomHTTPHeaders=.*/WebUI\\\CustomHTTPHeaders=X-Docker-Version: ${CONTAINER_VERSION:-unknown}/g" /config/qBittorrent/config/qBittorrent.conf
-sed -i "s/WebUI\\\CustomHTTPHeadersEnabled=.*/WebUI\\\CustomHTTPHeadersEnabled=true/g" /config/qBittorrent/config/qBittorrent.conf
+qbt_webui_set CustomHTTPHeaders "X-Docker-Version: ${CONTAINER_VERSION:-unknown}"
+qbt_webui_set CustomHTTPHeadersEnabled true
 
 # Set user and group id
 if [ -n "$PUID" ]; then
