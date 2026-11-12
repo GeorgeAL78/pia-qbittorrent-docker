@@ -25,6 +25,9 @@ Custom bridge networks work fine (the VPN tunnel runs inside the container eithe
   <WebUI>http://[IP]:[PORT:8888]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/GeorgeAL78/unraid-templates/main/pia-qbittorrent.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/GeorgeAL78/pia-qbittorrent-docker/master/readme/icon.png</Icon>
+  <Screenshot>https://raw.githubusercontent.com/GeorgeAL78/pia-qbittorrent-docker/master/readme/screenshots/transfers.png</Screenshot>
+  <Screenshot>https://raw.githubusercontent.com/GeorgeAL78/pia-qbittorrent-docker/master/readme/screenshots/connection.png</Screenshot>
+  <Screenshot>https://raw.githubusercontent.com/GeorgeAL78/pia-qbittorrent-docker/master/readme/screenshots/advanced.png</Screenshot>
   <ExtraParams>--cap-add=NET_ADMIN --restart unless-stopped</ExtraParams>
   <Config Name="Web UI Port" Target="8888" Default="8888" Mode="tcp" Description="qBittorrent Web UI port" Type="Port" Display="always" Required="true" Mask="false">8888</Config>
   <Config Name="Downloads" Target="/downloads" Default="/mnt/user/downloads/" Mode="rw" Description="Download directory" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/downloads/</Config>
