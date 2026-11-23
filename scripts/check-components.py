@@ -3,8 +3,6 @@
 repository owner, for:
 
   * master's Dockerfile pins: qBittorrent, libtorrent (2.1.x), Boost, Ninja
-  * the beta branch's pins: qBittorrent and libtorrent including pre-releases
-    (and Boost / Ninja when beta pins them differently from master)
   * the unpinned Alpine packages in the published :latest image: OpenVPN,
     WireGuard tools, iptables, Qt6 - newer when the Alpine branch has a newer
     build than the image contains, i.e. a rebuild would pick it up
@@ -154,17 +152,8 @@ def main():
     master_text = open(DOCKERFILE, encoding='utf-8').read()
     check_pins(master_text, MASTER, 'Dockerfile', '', False, set(), findings, errors)
 
-    if BETA_DOCKERFILE:
-        beta_text = open(BETA_DOCKERFILE, encoding='utf-8').read()
-    else:
-        beta_text = base64.b64decode(api(f'/repos/{REPO}/contents/Dockerfile?ref=beta')['content']).decode()
-    # Boost / Ninja on beta only matter if beta pins them differently from master.
-    same = set()
-    for name, pin_re, _, _ in MASTER[2:]:
-        m = re.findall(pin_re, master_text)
-        if m:
-            same.add((name, m[0]))
-    check_pins(beta_text, BETA, 'beta branch Dockerfile', ' (beta)', True, same, findings, errors)
+    # No issues for the beta branch: pre-releases are built automatically by
+    # auto-release.py and are not something to act on.
 
     if os.environ.get('SKIP_PACKAGES') != '1':
         check_packages(findings, errors)
