@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Weekly component check. Opens one issue per newer version, assigned to the
-repository owner, for:
+"""Weekly component check. Opens one issue per newer version (unassigned, so
+GitHub sends one email per issue rather than two), for:
 
   * master's Dockerfile pins: qBittorrent, libtorrent (2.1.x), Boost, Ninja
   * the unpinned Alpine packages in the published :latest image: OpenVPN,
@@ -170,10 +170,10 @@ def main():
         if title in existing:
             print(f'already reported: {title}')
         elif DRY:
-            print(f'[DRY] would open: "{title}" assigned to {OWNER}')
+            print(f'[DRY] would open: "{title}"')
         else:
             issue = api(f'/repos/{REPO}/issues', 'POST',
-                        {'title': title, 'body': body, 'labels': ['dependencies'], 'assignees': [OWNER]})
+                        {'title': title, 'body': body, 'labels': ['dependencies']})
             print(f'opened #{issue["number"]}: {title}')
 
     for e in errors:

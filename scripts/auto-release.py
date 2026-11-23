@@ -120,7 +120,7 @@ def open_issue(title, body):
         say(f'open issue "{title}"')
         return
     i = api(f'/repos/{REPO}/issues', 'POST', {'title': title, 'body': body,
-                                              'labels': ['dependencies'], 'assignees': [OWNER]})
+                                              'labels': ['dependencies']})
     print(f'opened #{i["number"]}: {title}')
 
 
