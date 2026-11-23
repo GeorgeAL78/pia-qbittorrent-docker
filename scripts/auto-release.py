@@ -246,6 +246,8 @@ def cmd_beta():
     tag_and_publish(tag, sha)
 
     stable = re.fullmatch(r'\d+\.\d+\.\d+', newest) is not None
+    if not stable:
+        return          # pre-releases go to :beta without an issue
     lt_pinned = pin(new_beta_df, LT_PIN, 'libtorrent')
     lt_min = min_libtorrent(newest)
     runs = f'{SERVER}/{REPO}/actions/workflows/{PUBLISH}'
@@ -254,10 +256,9 @@ def cmd_beta():
             f'once the build and smoke test pass ([publish runs]({runs})). `:latest` is unchanged.', '',
             f'libtorrent pinned: **{lt_pinned}**; qBittorrent {newest} needs at least **{lt_min or "unknown"}**. '
             'Library versions of the official builds: https://www.qbittorrent.org/download']
-    if stable:
-        body += ['', 'As a stable release it is also released as `:latest` automatically, '
-                     'in the same run, once its build and smoke test pass.']
-    open_issue(f'qBittorrent {newest} is available' + ('' if stable else ' (beta)'), '\n'.join(body))
+    body += ['', 'As a stable release it is also released as `:latest` automatically, '
+                 'in the same run, once its build and smoke test pass.']
+    open_issue(f'qBittorrent {newest} is available', '\n'.join(body))
 
 
 def cmd_promote(version):
