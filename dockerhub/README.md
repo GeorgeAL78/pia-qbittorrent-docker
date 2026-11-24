@@ -167,8 +167,8 @@ Image tags follow the bundled qBittorrent version. Fixes released between qBitto
 
 ## What's new
 
-**5.3.1** (latest)
-- Updated to qBittorrent 5.3.1 and libtorrent 2.1.3.
+**5.3.1-1** (latest)
+- Rebuilt with current Alpine packages.
 
 ### Recent highlights
 
