@@ -156,7 +156,7 @@ Available in **Community Applications**: search for `pia-qbittorrent`.
 | Component | Stable (`latest`) | Beta (`beta`) |
 |-----------|---------|---------|
 | Alpine Linux | 3.24 | same |
-| qBittorrent | 5.3.0 | same |
+| qBittorrent | 5.3.1 | same |
 | libtorrent | 2.1.3 | same |
 | Boost | 1.92.0 | same |
 | Python 3 | Alpine 3.24 default (required by qBittorrent search plugins) | same |
@@ -167,8 +167,8 @@ Image tags follow the bundled qBittorrent version. Fixes released between qBitto
 
 ## What's new
 
-**5.3.0-7** (latest)
-- Rebuilt with libtorrent 2.1.3 and current Alpine packages.
+**5.3.1** (latest)
+- Updated to qBittorrent 5.3.1 and libtorrent 2.1.3.
 
 ### Recent highlights
 
