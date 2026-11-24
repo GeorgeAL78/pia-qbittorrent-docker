@@ -97,10 +97,10 @@ The title-bar version comes from an `X-Docker-Version` response header this imag
 | Component | Stable (`latest`) | Beta (`beta`) |
 |-----------|---------|---------|
 | Alpine Linux | 3.24 | same |
-| qBittorrent | 5.3.0 | same |
+| qBittorrent | 5.3.0 | 5.3.1 |
 | libtorrent | 2.1.3 | same |
 | Boost | 1.92.0 | same |
-| OpenVPN | 2.7.7 | same |
+| OpenVPN | 2.7.9 | same |
 | WireGuard | 1.0.20260223 | same |
 | IPTables | 1.8.13 | same |
 | Python 3 | Alpine 3.24 default (required by qBittorrent search plugins) | same |
